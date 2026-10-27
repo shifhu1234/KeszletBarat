@@ -1,0 +1,48 @@
+# Built application files & packages
+*.apk
+*.ap_
+*.aab
+
+# Files for the ART/DALVIK VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated build directories
+/build/
+/app/build/
+bin/
+gen/
+out/
+
+# Gradle files & caches
+.gradle/
+buildOutputCleanup/
+
+# Local machine-specific configuration (SDK path, API keys, etc.)
+local.properties
+
+# Signing files & keystores
+*.jks
+*.keystore
+*.pepk
+*.p12
+
+# Android Studio / IntelliJ IDEA files
+.idea/
+*.iml
+.navigation/
+
+# Android Studio profiling, captures, and C++ outputs
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Java / Heap memory dump logs and crash logs
+*.hprof
+hs_err_pid*.log
+
+# OS-generated metadata files
+.DS_Store
+Thumbs.db

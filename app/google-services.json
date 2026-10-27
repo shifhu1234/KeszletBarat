@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "284941989890",
+    "project_id": "keszletbaratapp",
+    "storage_bucket": "keszletbaratapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:284941989890:android:0df030e8fd3e7dc5470f1b",
+        "android_client_info": {
+          "package_name": "hu.keszletbarat.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbUvEWcar8yXKbN0GUkCbKIQ2t-8pXANo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
