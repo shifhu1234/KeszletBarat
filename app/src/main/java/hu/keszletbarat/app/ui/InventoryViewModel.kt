@@ -9,6 +9,7 @@ import hu.keszletbarat.app.data.AnimationSpeed
 import hu.keszletbarat.app.data.AppColorPalette
 import hu.keszletbarat.app.data.AppSettings
 import hu.keszletbarat.app.data.FilterPlacement
+import hu.keszletbarat.app.data.GestureDirection
 import hu.keszletbarat.app.data.InventoryRepository
 import hu.keszletbarat.app.data.SettingsRepository
 import hu.keszletbarat.app.data.ThemeMode
@@ -37,7 +38,7 @@ data class InventoryUiState(
     val allItems: List<InventoryItem> = emptyList(),
     val filters: List<FilterItem> = FilterItem.defaultFilters,
     val productCategories: List<FilterItem> = FilterItem.defaultFilters.filter { it.isProductCategory },
-    val selectedFilterId: String = FilterItem.ID_ALL,
+    val selectedFilterIds: Set<String> = setOf(FilterItem.ID_ALL),
     val searchQuery: String = "",
     val lowStockCount: Int = 0,
     val isLoading: Boolean = true,
@@ -59,7 +60,7 @@ class InventoryViewModel(
     private val settingsRepository = SettingsRepository(application)
 
     private val _searchQuery = MutableStateFlow("")
-    private val _selectedFilterId = MutableStateFlow(FilterItem.ID_ALL)
+    private val _selectedFilterIds = MutableStateFlow<Set<String>>(setOf(FilterItem.ID_ALL))
 
     private val _optimisticOverrides = MutableStateFlow<Map<String, InventoryItem>>(emptyMap())
     private val _optimisticDeletedIds = MutableStateFlow<Set<String>>(emptySet())
@@ -122,23 +123,41 @@ class InventoryViewModel(
     val uiState: StateFlow<InventoryUiState> = combine(
         mergedStateFlow,
         _searchQuery,
-        _selectedFilterId,
+        _selectedFilterIds,
         settingsRepository.settings
-    ) { merged, query, selectedId, currentSettings ->
+    ) { merged, query, selectedIds, currentSettings ->
         val allItems = merged.allItems
         val filters = merged.filters
-        val activeFilter = filters.firstOrNull { it.id == selectedId }
-            ?: filters.firstOrNull { it.isAllFilter }
-            ?: FilterItem.defaultFilters.first()
+        val allFilterItem = filters.firstOrNull { it.isAllFilter } ?: FilterItem.defaultFilters.first()
 
+        val filtersDisabled = currentSettings.filterPlacement == FilterPlacement.HIDDEN
+        val matchedActiveFilters = if (filtersDisabled) {
+            emptyList()
+        } else {
+            filters.filter { it.id in selectedIds && !it.isAllFilter }
+        }
+
+        val effectiveSelectedIds = if (filtersDisabled || matchedActiveFilters.isEmpty() || selectedIds.any { id -> filters.firstOrNull { it.id == id }?.isAllFilter == true }) {
+            setOf(allFilterItem.id)
+        } else {
+            matchedActiveFilters.map { it.id }.toSet()
+        }
+
+        val isAllSelected = effectiveSelectedIds.contains(allFilterItem.id)
         val normalizedQuery = query.normalizeForSearch()
         val lowStockTotal = allItems.count { it.isLowStock }
 
         val filtered = allItems.filter { item ->
-            val matchesCategory = when {
-                activeFilter.isAllFilter -> true
-                activeFilter.isLowStockFilter -> item.isLowStock
-                else -> item.category.equals(activeFilter.label, ignoreCase = true)
+            val matchesCategory = if (isAllSelected) {
+                true
+            } else {
+                matchedActiveFilters.any { filter ->
+                    if (filter.isLowStockFilter) {
+                        item.isLowStock
+                    } else {
+                        item.category.equals(filter.label, ignoreCase = true)
+                    }
+                }
             }
             val matchesQuery = if (normalizedQuery.isEmpty()) {
                 true
@@ -159,7 +178,7 @@ class InventoryViewModel(
             allItems = allItems,
             filters = filters,
             productCategories = filters.filter { it.isProductCategory },
-            selectedFilterId = activeFilter.id,
+            selectedFilterIds = effectiveSelectedIds,
             searchQuery = query,
             lowStockCount = lowStockTotal,
             isLoading = false,
@@ -210,10 +229,10 @@ class InventoryViewModel(
         if (action.isNullOrBlank()) return
         when (action) {
             KeszletWidgetManager.ACTION_OPEN_ALL -> {
-                _selectedFilterId.value = FilterItem.ID_ALL
+                _selectedFilterIds.value = setOf(FilterItem.ID_ALL)
             }
             KeszletWidgetManager.ACTION_OPEN_LOW_STOCK -> {
-                _selectedFilterId.value = FilterItem.ID_LOW_STOCK
+                _selectedFilterIds.value = setOf(FilterItem.ID_LOW_STOCK)
             }
             KeszletWidgetManager.ACTION_OPEN_ADD_ITEM -> {
                 _pendingWidgetAction.value = action
@@ -230,7 +249,32 @@ class InventoryViewModel(
     }
 
     fun onFilterSelected(filterId: String) {
-        _selectedFilterId.value = filterId
+        val filters = uiState.value.filters
+        val clickedFilter = filters.firstOrNull { it.id == filterId }
+        val allFilterId = filters.firstOrNull { it.isAllFilter }?.id ?: FilterItem.ID_ALL
+
+        if (clickedFilter == null || clickedFilter.isAllFilter || filterId == FilterItem.ID_ALL) {
+            _selectedFilterIds.value = setOf(allFilterId)
+            return
+        }
+
+        _selectedFilterIds.update { current ->
+            val withoutAll = current.filterNot { id ->
+                id == FilterItem.ID_ALL || id == "__all__" || filters.firstOrNull { it.id == id }?.isAllFilter == true
+            }.toMutableSet()
+
+            if (filterId in withoutAll) {
+                withoutAll.remove(filterId)
+            } else {
+                withoutAll.add(filterId)
+            }
+
+            if (withoutAll.isEmpty()) {
+                setOf(allFilterId)
+            } else {
+                withoutAll
+            }
+        }
     }
 
     fun incrementQuantity(item: InventoryItem) {
@@ -391,8 +435,9 @@ class InventoryViewModel(
         current.removeAll { it.id == filterId }
         val fallbackLabel = current.firstOrNull { it.isFallbackCategory }?.label ?: "Egyéb"
 
-        if (_selectedFilterId.value == filterId) {
-            _selectedFilterId.value = FilterItem.ID_ALL
+        _selectedFilterIds.update { selected ->
+            val updated = selected - filterId
+            if (updated.isEmpty()) setOf(FilterItem.ID_ALL) else updated
         }
 
         val migrations = mapOf(target.label to fallbackLabel)
@@ -412,8 +457,10 @@ class InventoryViewModel(
             }
         }
 
-        if (defaultFilters.none { it.id == _selectedFilterId.value }) {
-            _selectedFilterId.value = FilterItem.ID_ALL
+        val defaultIds = defaultFilters.map { it.id }.toSet()
+        _selectedFilterIds.update { selected ->
+            val validSelected = selected.intersect(defaultIds)
+            if (validSelected.isEmpty()) setOf(FilterItem.ID_ALL) else validSelected
         }
 
         persistFilterChanges(newFilters = defaultFilters, categoryMigrations = migrations)
@@ -476,12 +523,12 @@ class InventoryViewModel(
         settingsRepository.setAnimationSpeed(speed)
     }
 
-    fun setSwipeUpToAddItem(enabled: Boolean) {
-        settingsRepository.setSwipeUpToAddItem(enabled)
+    fun setAddItemGesture(direction: GestureDirection) {
+        settingsRepository.setAddItemGesture(direction)
     }
 
-    fun setSwipeDownToOpenSettings(enabled: Boolean) {
-        settingsRepository.setSwipeDownToOpenSettings(enabled)
+    fun setOpenSettingsGesture(direction: GestureDirection) {
+        settingsRepository.setOpenSettingsGesture(direction)
     }
 
     fun setGroupByCategory(enabled: Boolean) {

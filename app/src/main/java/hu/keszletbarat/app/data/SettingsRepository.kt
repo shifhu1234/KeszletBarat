@@ -37,13 +37,25 @@ enum class FilterPlacement(val label: String) {
     LEFT_EDGE("Bal oldalsáv"),
     RIGHT_EDGE("Jobb oldalsáv"),
     COLLAPSIBLE_PANEL("Kinyithatós menü"),
-    TOP_DROPDOWN("Felső gomb")
+    TOP_DROPDOWN("Felső gomb"),
+    HIDDEN("Kikapcsolva")
 }
 
 enum class AnimationSpeed(val label: String, val durationMillis: Int) {
-    NORMAL("Normál", 220),
-    BOUNCY("Rugós", 260),
+    NORMAL("Normál", 230),
+    SNAPPY("Villámgyors", 110),
+    BOUNCY("Rugós", 280),
+    ZOOM("Nagyító", 220),
+    FLOAT("Lebegő", 360),
     NONE("Kikapcsolva", 0)
+}
+
+enum class GestureDirection(val label: String) {
+    NONE("Kikapcsolva"),
+    SWIPE_UP("Felfelé ↑"),
+    SWIPE_DOWN("Lefelé ↓"),
+    SWIPE_LEFT("Balra ←"),
+    SWIPE_RIGHT("Jobbra →")
 }
 
 @Immutable
@@ -52,8 +64,8 @@ data class AppSettings(
     val colorPalette: AppColorPalette = AppColorPalette.DYNAMIC,
     val filterPlacement: FilterPlacement = FilterPlacement.TOP_BAR,
     val animationSpeed: AnimationSpeed = AnimationSpeed.BOUNCY,
-    val swipeUpToAddItem: Boolean = true,
-    val swipeDownToOpenSettings: Boolean = true,
+    val addItemGesture: GestureDirection = GestureDirection.SWIPE_UP,
+    val openSettingsGesture: GestureDirection = GestureDirection.SWIPE_DOWN,
     val groupByCategory: Boolean = false,
     val defaultMinQuantity: Double = 1.0,
     val quantityStep: Double = 1.0,
@@ -101,14 +113,38 @@ class SettingsRepository(context: Context) {
         _settings.value = _settings.value.copy(animationSpeed = speed)
     }
 
-    fun setSwipeUpToAddItem(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_SWIPE_UP_ADD, enabled).apply()
-        _settings.value = _settings.value.copy(swipeUpToAddItem = enabled)
+    fun setAddItemGesture(direction: GestureDirection) {
+        val current = _settings.value
+        val updatedSettingsGesture = if (direction != GestureDirection.NONE && current.openSettingsGesture == direction) {
+            GestureDirection.NONE
+        } else {
+            current.openSettingsGesture
+        }
+        prefs.edit()
+            .putString(KEY_ADD_ITEM_GESTURE, direction.name)
+            .putString(KEY_OPEN_SETTINGS_GESTURE, updatedSettingsGesture.name)
+            .apply()
+        _settings.value = current.copy(
+            addItemGesture = direction,
+            openSettingsGesture = updatedSettingsGesture
+        )
     }
 
-    fun setSwipeDownToOpenSettings(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_SWIPE_DOWN_SETTINGS, enabled).apply()
-        _settings.value = _settings.value.copy(swipeDownToOpenSettings = enabled)
+    fun setOpenSettingsGesture(direction: GestureDirection) {
+        val current = _settings.value
+        val updatedAddGesture = if (direction != GestureDirection.NONE && current.addItemGesture == direction) {
+            GestureDirection.NONE
+        } else {
+            current.addItemGesture
+        }
+        prefs.edit()
+            .putString(KEY_OPEN_SETTINGS_GESTURE, direction.name)
+            .putString(KEY_ADD_ITEM_GESTURE, updatedAddGesture.name)
+            .apply()
+        _settings.value = current.copy(
+            openSettingsGesture = direction,
+            addItemGesture = updatedAddGesture
+        )
     }
 
     fun setGroupByCategory(enabled: Boolean) {
@@ -156,8 +192,12 @@ class SettingsRepository(context: Context) {
         val animName = prefs.getString(KEY_ANIMATION_SPEED, AnimationSpeed.BOUNCY.name) ?: AnimationSpeed.BOUNCY.name
         val animationSpeed = runCatching { AnimationSpeed.valueOf(animName) }.getOrDefault(AnimationSpeed.BOUNCY)
 
-        val swipeUpAdd = prefs.getBoolean(KEY_SWIPE_UP_ADD, true)
-        val swipeDownSettings = prefs.getBoolean(KEY_SWIPE_DOWN_SETTINGS, true)
+        val addGestureName = prefs.getString(KEY_ADD_ITEM_GESTURE, GestureDirection.SWIPE_UP.name) ?: GestureDirection.SWIPE_UP.name
+        val addItemGesture = runCatching { GestureDirection.valueOf(addGestureName) }.getOrDefault(GestureDirection.SWIPE_UP)
+
+        val settingsGestureName = prefs.getString(KEY_OPEN_SETTINGS_GESTURE, GestureDirection.SWIPE_DOWN.name) ?: GestureDirection.SWIPE_DOWN.name
+        val openSettingsGesture = runCatching { GestureDirection.valueOf(settingsGestureName) }.getOrDefault(GestureDirection.SWIPE_DOWN)
+
         val groupByCategory = prefs.getBoolean(KEY_GROUP_BY_CATEGORY, false)
 
         val defaultMinQuantity = prefs.getString(KEY_DEFAULT_MIN_QUANTITY, "1.0")
@@ -183,8 +223,8 @@ class SettingsRepository(context: Context) {
             colorPalette = colorPalette,
             filterPlacement = filterPlacement,
             animationSpeed = animationSpeed,
-            swipeUpToAddItem = swipeUpAdd,
-            swipeDownToOpenSettings = swipeDownSettings,
+            addItemGesture = addItemGesture,
+            openSettingsGesture = openSettingsGesture,
             groupByCategory = groupByCategory,
             defaultMinQuantity = defaultMinQuantity,
             quantityStep = quantityStep,
@@ -200,8 +240,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_COLOR_PALETTE = "color_palette"
         private const val KEY_FILTER_PLACEMENT = "filter_placement"
         private const val KEY_ANIMATION_SPEED = "animation_speed"
-        private const val KEY_SWIPE_UP_ADD = "swipe_up_add"
-        private const val KEY_SWIPE_DOWN_SETTINGS = "swipe_down_settings"
+        private const val KEY_ADD_ITEM_GESTURE = "add_item_gesture"
+        private const val KEY_OPEN_SETTINGS_GESTURE = "open_settings_gesture"
         private const val KEY_GROUP_BY_CATEGORY = "group_by_category"
         private const val KEY_DEFAULT_MIN_QUANTITY = "default_min_quantity"
         private const val KEY_QUANTITY_STEP = "quantity_step"

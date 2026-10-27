@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -23,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -136,6 +138,7 @@ import hu.keszletbarat.app.data.AnimationSpeed
 import hu.keszletbarat.app.data.AppColorPalette
 import hu.keszletbarat.app.data.AppSettings
 import hu.keszletbarat.app.data.FilterPlacement
+import hu.keszletbarat.app.data.GestureDirection
 import hu.keszletbarat.app.data.ThemeMode
 import hu.keszletbarat.app.model.CommonHouseholdSuggestions
 import hu.keszletbarat.app.model.FilterItem
@@ -183,29 +186,31 @@ fun InventoryScreen(
 
     val placement = uiState.settings.filterPlacement
     val animSpeed = uiState.settings.animationSpeed
-    val swipeUpEnabled = uiState.settings.swipeUpToAddItem
-    val swipeDownEnabled = uiState.settings.swipeDownToOpenSettings
+    val addGesture = uiState.settings.addItemGesture
+    val settingsGesture = uiState.settings.openSettingsGesture
     val canTriggerMainGestures = !isEditorSheetVisible && !isSettingsSheetVisible
 
-    val triggerSwipeUpAdd = {
-        if (canTriggerMainGestures && swipeUpEnabled) {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            activeSheetItem = null
-            isEditorSheetVisible = true
-        }
+    val isDirectionAssigned = { dir: GestureDirection ->
+        dir != GestureDirection.NONE && (addGesture == dir || settingsGesture == dir)
     }
 
-    val triggerSwipeDownSettings = {
-        if (canTriggerMainGestures && swipeDownEnabled) {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            isSettingsSheetVisible = true
+    val triggerGestureDirection = { dir: GestureDirection ->
+        if (canTriggerMainGestures && dir != GestureDirection.NONE) {
+            if (addGesture == dir) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                activeSheetItem = null
+                isEditorSheetVisible = true
+            } else if (settingsGesture == dir) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                isSettingsSheetVisible = true
+            }
         }
     }
 
     val nestedScrollConnection = remember(
         canTriggerMainGestures,
-        swipeUpEnabled,
-        swipeDownEnabled
+        addGesture,
+        settingsGesture
     ) {
         object : NestedScrollConnection {
             private var accumulatedOverscrollY = 0f
@@ -231,14 +236,14 @@ fun InventoryScreen(
                 }
                 if (available.y != 0f) {
                     accumulatedOverscrollY += available.y
-                    if (accumulatedOverscrollY <= -thresholdPx && swipeUpEnabled) {
+                    if (accumulatedOverscrollY <= -thresholdPx && isDirectionAssigned(GestureDirection.SWIPE_UP)) {
                         gestureConsumedInCurrentDrag = true
                         accumulatedOverscrollY = 0f
-                        triggerSwipeUpAdd()
-                    } else if (accumulatedOverscrollY >= thresholdPx && swipeDownEnabled) {
+                        triggerGestureDirection(GestureDirection.SWIPE_UP)
+                    } else if (accumulatedOverscrollY >= thresholdPx && isDirectionAssigned(GestureDirection.SWIPE_DOWN)) {
                         gestureConsumedInCurrentDrag = true
                         accumulatedOverscrollY = 0f
-                        triggerSwipeDownSettings()
+                        triggerGestureDirection(GestureDirection.SWIPE_DOWN)
                     }
                 }
                 return Offset.Zero
@@ -277,6 +282,8 @@ fun InventoryScreen(
         }
     }
 
+    var horizontalDragAccumulator by remember { mutableFloatStateOf(0f) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -284,7 +291,7 @@ fun InventoryScreen(
             topBar = {
                 InventoryTopBar(
                     searchQuery = uiState.searchQuery,
-                    selectedFilterId = uiState.selectedFilterId,
+                    selectedFilterIds = uiState.selectedFilterIds,
                     filters = uiState.filters,
                     filterPlacement = placement,
                     animationSpeed = animSpeed,
@@ -296,8 +303,7 @@ fun InventoryScreen(
                     onSortFieldChange = viewModel::setSortField,
                     onSortDirectionChange = viewModel::setSortDirection,
                     onOpenSettings = { isSettingsSheetVisible = true },
-                    onSwipeUp = triggerSwipeUpAdd,
-                    onSwipeDown = triggerSwipeDownSettings
+                    onTriggerGesture = triggerGestureDirection
                 )
             },
             bottomBar = {
@@ -314,7 +320,7 @@ fun InventoryScreen(
                         ) {
                             HorizontalFilterRow(
                                 filters = uiState.filters,
-                                selectedFilterId = uiState.selectedFilterId,
+                                selectedFilterIds = uiState.selectedFilterIds,
                                 onFilterSelected = viewModel::onFilterSelected
                             )
                         }
@@ -342,79 +348,64 @@ fun InventoryScreen(
                 }
             }
         ) { innerPadding ->
-            Row(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-            ) {
-                if (placement == FilterPlacement.LEFT_EDGE) {
-                    CollapsibleEdgeSidebar(
-                        isLeft = true,
-                        isOpen = isEdgeSidebarOpen,
-                        animationSpeed = animSpeed,
-                        filters = uiState.filters,
-                        selectedFilterId = uiState.selectedFilterId,
-                        onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
-                        onFilterSelected = viewModel::onFilterSelected
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .nestedScroll(nestedScrollConnection)
-                ) {
-                    if (uiState.items.isEmpty() && !uiState.isLoading) {
-                        val activeFilter = uiState.filters.firstOrNull { it.id == uiState.selectedFilterId }
-                        EmptyInventoryState(
-                            isLowStockFilter = activeFilter?.isLowStockFilter == true,
-                            hasSearchQuery = uiState.searchQuery.isNotBlank(),
-                            swipeUpEnabled = swipeUpEnabled,
-                            swipeDownEnabled = swipeDownEnabled,
-                            onSwipeUp = triggerSwipeUpAdd,
-                            onSwipeDown = triggerSwipeDownSettings,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = 14.dp,
-                                end = 14.dp,
-                                top = 8.dp,
-                                bottom = 104.dp
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            if (uiState.settings.groupByCategory) {
-                                groupedCategories.forEach { (categoryName, categoryItems) ->
-                                    item(
-                                        key = "category_header_$categoryName",
-                                        contentType = "category_header"
-                                    ) {
-                                        CategoryGroupHeader(
-                                            categoryName = categoryName,
-                                            itemCount = categoryItems.size
-                                        )
-                                    }
-                                    items(
-                                        items = categoryItems,
-                                        key = { it.id },
-                                        contentType = { "inventory_item" }
-                                    ) { item ->
-                                        InventoryItemRow(
-                                            item = item,
-                                            onIncrement = onIncrementItem,
-                                            onDecrement = onDecrementItem,
-                                            onToggleOpened = onToggleOpenedItem,
-                                            onEditRequest = onEditItem
-                                        )
-                                    }
+                    .nestedScroll(nestedScrollConnection)
+                    .pointerInput(canTriggerMainGestures, addGesture, settingsGesture) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { horizontalDragAccumulator = 0f },
+                            onDragEnd = { horizontalDragAccumulator = 0f },
+                            onDragCancel = { horizontalDragAccumulator = 0f },
+                            onHorizontalDrag = { _, dragAmount ->
+                                if (!canTriggerMainGestures) return@detectHorizontalDragGestures
+                                horizontalDragAccumulator += dragAmount
+                                if (horizontalDragAccumulator <= -95f && isDirectionAssigned(GestureDirection.SWIPE_LEFT)) {
+                                    horizontalDragAccumulator = 0f
+                                    triggerGestureDirection(GestureDirection.SWIPE_LEFT)
+                                } else if (horizontalDragAccumulator >= 95f && isDirectionAssigned(GestureDirection.SWIPE_RIGHT)) {
+                                    horizontalDragAccumulator = 0f
+                                    triggerGestureDirection(GestureDirection.SWIPE_RIGHT)
                                 }
-                            } else {
+                            }
+                        )
+                    }
+            ) {
+                if (uiState.items.isEmpty() && !uiState.isLoading) {
+                    val onlyLowStockSelected = uiState.selectedFilterIds.size == 1 &&
+                        uiState.filters.firstOrNull { it.id in uiState.selectedFilterIds }?.isLowStockFilter == true
+                    EmptyInventoryState(
+                        isLowStockFilter = onlyLowStockSelected,
+                        hasSearchQuery = uiState.searchQuery.isNotBlank(),
+                        addItemGesture = addGesture,
+                        onTriggerGesture = triggerGestureDirection,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 14.dp,
+                            end = 14.dp,
+                            top = 8.dp,
+                            bottom = 104.dp
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (uiState.settings.groupByCategory) {
+                            groupedCategories.forEach { (categoryName, categoryItems) ->
+                                item(
+                                    key = "category_header_$categoryName",
+                                    contentType = "category_header"
+                                ) {
+                                    CategoryGroupHeader(
+                                        categoryName = categoryName,
+                                        itemCount = categoryItems.size
+                                    )
+                                }
                                 items(
-                                    items = uiState.items,
+                                    items = categoryItems,
                                     key = { it.id },
                                     contentType = { "inventory_item" }
                                 ) { item ->
@@ -427,20 +418,71 @@ fun InventoryScreen(
                                     )
                                 }
                             }
+                        } else {
+                            items(
+                                items = uiState.items,
+                                key = { it.id },
+                                contentType = { "inventory_item" }
+                            ) { item ->
+                                InventoryItemRow(
+                                    item = item,
+                                    onIncrement = onIncrementItem,
+                                    onDecrement = onDecrementItem,
+                                    onToggleOpened = onToggleOpenedItem,
+                                    onEditRequest = onEditItem
+                                )
+                            }
                         }
                     }
                 }
 
-                if (placement == FilterPlacement.RIGHT_EDGE) {
-                    CollapsibleEdgeSidebar(
-                        isLeft = false,
-                        isOpen = isEdgeSidebarOpen,
-                        animationSpeed = animSpeed,
-                        filters = uiState.filters,
-                        selectedFilterId = uiState.selectedFilterId,
-                        onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
-                        onFilterSelected = viewModel::onFilterSelected
+                if ((placement == FilterPlacement.LEFT_EDGE || placement == FilterPlacement.RIGHT_EDGE) && isEdgeSidebarOpen) {
+                    val sidebarScrimInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.22f))
+                            .clickable(
+                                interactionSource = sidebarScrimInteraction,
+                                indication = null,
+                                onClick = { isEdgeSidebarOpen = false }
+                            )
                     )
+                }
+
+                if (placement == FilterPlacement.LEFT_EDGE) {
+                    Box(
+                        modifier = Modifier.fillMaxHeight(),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        CollapsibleEdgeSidebar(
+                            isLeft = true,
+                            isOpen = isEdgeSidebarOpen,
+                            animationSpeed = animSpeed,
+                            filters = uiState.filters,
+                            selectedFilterIds = uiState.selectedFilterIds,
+                            onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
+                            onFilterSelected = viewModel::onFilterSelected
+                        )
+                    }
+                }
+
+                if (placement == FilterPlacement.RIGHT_EDGE) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize(),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        CollapsibleEdgeSidebar(
+                            isLeft = false,
+                            isOpen = isEdgeSidebarOpen,
+                            animationSpeed = animSpeed,
+                            filters = uiState.filters,
+                            selectedFilterIds = uiState.selectedFilterIds,
+                            onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
+                            onFilterSelected = viewModel::onFilterSelected
+                        )
+                    }
                 }
             }
         }
@@ -501,8 +543,8 @@ fun InventoryScreen(
                 onColorPaletteChange = viewModel::setColorPalette,
                 onFilterPlacementChange = viewModel::setFilterPlacement,
                 onAnimationSpeedChange = viewModel::setAnimationSpeed,
-                onSwipeUpToAddItemChange = viewModel::setSwipeUpToAddItem,
-                onSwipeDownToOpenSettingsChange = viewModel::setSwipeDownToOpenSettings,
+                onAddItemGestureChange = viewModel::setAddItemGesture,
+                onOpenSettingsGestureChange = viewModel::setOpenSettingsGesture,
                 onGroupByCategoryChange = viewModel::setGroupByCategory,
                 onMoveFilter = viewModel::moveFilterOrder,
                 onAddFilter = viewModel::addFilter,
@@ -597,42 +639,81 @@ private fun AdaptiveBottomSheet(
         }
     } else {
         val duration = animationSpeed.durationMillis
-        val isBouncy = animationSpeed == AnimationSpeed.BOUNCY
 
-        val sheetEnterTransition = if (isBouncy) {
-            scaleIn(
-                initialScale = 0.80f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessMediumLow
+        val sheetEnterTransition = when (animationSpeed) {
+            AnimationSpeed.BOUNCY -> {
+                scaleIn(
+                    initialScale = 0.80f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                ) + slideInVertically(
+                    initialOffsetY = { it / 2 },
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
                 )
-            ) + slideInVertically(
-                initialOffsetY = { it / 2 },
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessMediumLow
+            }
+            AnimationSpeed.ZOOM -> {
+                scaleIn(
+                    initialScale = 0.45f,
+                    animationSpec = tween(duration, easing = FastOutSlowInEasing)
+                ) + fadeIn(animationSpec = tween(duration))
+            }
+            AnimationSpeed.FLOAT -> {
+                fadeIn(animationSpec = tween(duration, easing = FastOutSlowInEasing)) +
+                    slideInVertically(
+                        initialOffsetY = { it / 3 },
+                        animationSpec = tween(duration, easing = FastOutSlowInEasing)
+                    ) +
+                    scaleIn(
+                        initialScale = 0.94f,
+                        animationSpec = tween(duration, easing = FastOutSlowInEasing)
+                    )
+            }
+            else -> {
+                slideInVertically(
+                    initialOffsetY = { it },
+                    animationSpec = tween(duration, easing = FastOutSlowInEasing)
                 )
-            )
-        } else {
-            slideInVertically(
-                initialOffsetY = { it },
-                animationSpec = tween(duration)
-            )
+            }
         }
 
-        val sheetExitTransition = if (isBouncy) {
-            scaleOut(
-                targetScale = 0.84f,
-                animationSpec = tween(190)
-            ) + slideOutVertically(
-                targetOffsetY = { it / 2 },
-                animationSpec = tween(190)
-            )
-        } else {
-            slideOutVertically(
-                targetOffsetY = { it },
-                animationSpec = tween(duration)
-            )
+        val sheetExitTransition = when (animationSpeed) {
+            AnimationSpeed.BOUNCY -> {
+                scaleOut(
+                    targetScale = 0.84f,
+                    animationSpec = tween(190)
+                ) + slideOutVertically(
+                    targetOffsetY = { it / 2 },
+                    animationSpec = tween(190)
+                )
+            }
+            AnimationSpeed.ZOOM -> {
+                scaleOut(
+                    targetScale = 0.45f,
+                    animationSpec = tween(duration, easing = FastOutSlowInEasing)
+                ) + fadeOut(animationSpec = tween(duration))
+            }
+            AnimationSpeed.FLOAT -> {
+                fadeOut(animationSpec = tween(duration, easing = FastOutSlowInEasing)) +
+                    slideOutVertically(
+                        targetOffsetY = { it / 3 },
+                        animationSpec = tween(duration, easing = FastOutSlowInEasing)
+                    ) +
+                    scaleOut(
+                        targetScale = 0.94f,
+                        animationSpec = tween(duration, easing = FastOutSlowInEasing)
+                    )
+            }
+            else -> {
+                slideOutVertically(
+                    targetOffsetY = { it },
+                    animationSpec = tween(duration, easing = FastOutSlowInEasing)
+                )
+            }
         }
 
         AnimatedVisibility(
@@ -700,7 +781,7 @@ private fun SheetDragHandle() {
 @Composable
 private fun InventoryTopBar(
     searchQuery: String,
-    selectedFilterId: String,
+    selectedFilterIds: Set<String>,
     filters: List<FilterItem>,
     filterPlacement: FilterPlacement,
     animationSpeed: AnimationSpeed,
@@ -712,36 +793,64 @@ private fun InventoryTopBar(
     onSortFieldChange: (SortField) -> Unit,
     onSortDirectionChange: (SortDirection) -> Unit,
     onOpenSettings: () -> Unit,
-    onSwipeUp: () -> Unit,
-    onSwipeDown: () -> Unit
+    onTriggerGesture: (GestureDirection) -> Unit
 ) {
     var isSortMenuExpanded by remember { mutableStateOf(false) }
     var isFilterDropdownExpanded by remember { mutableStateOf(false) }
     var isCollapsibleOpen by rememberSaveable { mutableStateOf(false) }
-    var dragAccumulator by remember { mutableFloatStateOf(0f) }
+    var verticalDragAcc by remember { mutableFloatStateOf(0f) }
+    var horizontalDragAcc by remember { mutableFloatStateOf(0f) }
 
-    val activeFilter = filters.firstOrNull { it.id == selectedFilterId } ?: filters.firstOrNull()
+    val selectedFilters = remember(filters, selectedFilterIds) {
+        filters.filter { it.id in selectedFilterIds }
+    }
+    val isOnlyAllSelected = selectedFilters.isEmpty() || selectedFilters.all { it.isAllFilter }
+    val selectedFiltersSummary = remember(selectedFilters, isOnlyAllSelected) {
+        if (isOnlyAllSelected) {
+            "Összes"
+        } else {
+            selectedFilters.joinToString(", ") { it.label }
+        }
+    }
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp,
-        modifier = Modifier.pointerInput(onSwipeUp, onSwipeDown) {
-            detectVerticalDragGestures(
-                onDragStart = { dragAccumulator = 0f },
-                onDragEnd = { dragAccumulator = 0f },
-                onDragCancel = { dragAccumulator = 0f },
-                onVerticalDrag = { _, dragAmount ->
-                    dragAccumulator += dragAmount
-                    if (dragAccumulator <= -90f) {
-                        dragAccumulator = 0f
-                        onSwipeUp()
-                    } else if (dragAccumulator >= 90f) {
-                        dragAccumulator = 0f
-                        onSwipeDown()
+        modifier = Modifier
+            .pointerInput(onTriggerGesture) {
+                detectVerticalDragGestures(
+                    onDragStart = { verticalDragAcc = 0f },
+                    onDragEnd = { verticalDragAcc = 0f },
+                    onDragCancel = { verticalDragAcc = 0f },
+                    onVerticalDrag = { _, dragAmount ->
+                        verticalDragAcc += dragAmount
+                        if (verticalDragAcc <= -90f) {
+                            verticalDragAcc = 0f
+                            onTriggerGesture(GestureDirection.SWIPE_UP)
+                        } else if (verticalDragAcc >= 90f) {
+                            verticalDragAcc = 0f
+                            onTriggerGesture(GestureDirection.SWIPE_DOWN)
+                        }
                     }
-                }
-            )
-        }
+                )
+            }
+            .pointerInput(onTriggerGesture) {
+                detectHorizontalDragGestures(
+                    onDragStart = { horizontalDragAcc = 0f },
+                    onDragEnd = { horizontalDragAcc = 0f },
+                    onDragCancel = { horizontalDragAcc = 0f },
+                    onHorizontalDrag = { _, dragAmount ->
+                        horizontalDragAcc += dragAmount
+                        if (horizontalDragAcc <= -90f) {
+                            horizontalDragAcc = 0f
+                            onTriggerGesture(GestureDirection.SWIPE_LEFT)
+                        } else if (horizontalDragAcc >= 90f) {
+                            horizontalDragAcc = 0f
+                            onTriggerGesture(GestureDirection.SWIPE_RIGHT)
+                        }
+                    }
+                )
+            }
     ) {
         Column(
             modifier = Modifier
@@ -804,12 +913,12 @@ private fun InventoryTopBar(
                             modifier = Modifier.size(48.dp),
                             shape = CircleShape,
                             colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                containerColor = if (activeFilter?.isAllFilter == false) {
+                                containerColor = if (!isOnlyAllSelected) {
                                     MaterialTheme.colorScheme.primaryContainer
                                 } else {
                                     MaterialTheme.colorScheme.surfaceContainerHigh
                                 },
-                                contentColor = if (activeFilter?.isAllFilter == false) {
+                                contentColor = if (!isOnlyAllSelected) {
                                     MaterialTheme.colorScheme.onPrimaryContainer
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
@@ -827,7 +936,7 @@ private fun InventoryTopBar(
                             onDismissRequest = { isFilterDropdownExpanded = false }
                         ) {
                             filters.forEach { filter ->
-                                val isSelected = filter.id == selectedFilterId
+                                val isSelected = filter.id in selectedFilterIds
                                 DropdownMenuItem(
                                     text = {
                                         Text(
@@ -846,7 +955,9 @@ private fun InventoryTopBar(
                                     } else null,
                                     onClick = {
                                         onFilterSelected(filter.id)
-                                        isFilterDropdownExpanded = false
+                                        if (filter.isAllFilter) {
+                                            isFilterDropdownExpanded = false
+                                        }
                                     }
                                 )
                             }
@@ -926,12 +1037,12 @@ private fun InventoryTopBar(
                     Spacer(modifier = Modifier.height(8.dp))
                     HorizontalFilterRow(
                         filters = filters,
-                        selectedFilterId = selectedFilterId,
+                        selectedFilterIds = selectedFilterIds,
                         onFilterSelected = onFilterSelected
                     )
                 }
                 FilterPlacement.TOP_DROPDOWN -> {
-                    if (activeFilter != null && !activeFilter.isAllFilter) {
+                    if (!isOnlyAllSelected) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(
                             modifier = Modifier
@@ -941,9 +1052,12 @@ private fun InventoryTopBar(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Szűrő: ${activeFilter.label}",
+                                text = "Szűrők: $selectedFiltersSummary",
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             TextButton(
                                 onClick = { onFilterSelected(FilterItem.ID_ALL) },
@@ -975,6 +1089,7 @@ private fun InventoryTopBar(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Row(
+                                    modifier = Modifier.weight(1f),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
@@ -985,8 +1100,10 @@ private fun InventoryTopBar(
                                         tint = MaterialTheme.colorScheme.primary
                                     )
                                     Text(
-                                        text = "Szűrő: ${activeFilter?.label ?: "Összes"}",
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                        text = "Szűrők: $selectedFiltersSummary",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                                 Icon(
@@ -1006,7 +1123,7 @@ private fun InventoryTopBar(
                                         filters.forEach { filter ->
                                             StableFilterChip(
                                                 filter = filter,
-                                                isSelected = filter.id == selectedFilterId,
+                                                isSelected = filter.id in selectedFilterIds,
                                                 onClick = { onFilterSelected(filter.id) }
                                             )
                                         }
@@ -1034,7 +1151,7 @@ private fun InventoryTopBar(
                                             filters.forEach { filter ->
                                                 StableFilterChip(
                                                     filter = filter,
-                                                    isSelected = filter.id == selectedFilterId,
+                                                    isSelected = filter.id in selectedFilterIds,
                                                     onClick = { onFilterSelected(filter.id) }
                                                 )
                                             }
@@ -1130,7 +1247,7 @@ private fun CompactFilterChip(
 @Composable
 private fun HorizontalFilterRow(
     filters: List<FilterItem>,
-    selectedFilterId: String,
+    selectedFilterIds: Set<String>,
     onFilterSelected: (String) -> Unit
 ) {
     LazyRow(
@@ -1144,7 +1261,7 @@ private fun HorizontalFilterRow(
         ) { filter ->
             StableFilterChip(
                 filter = filter,
-                isSelected = selectedFilterId == filter.id,
+                isSelected = filter.id in selectedFilterIds,
                 onClick = { onFilterSelected(filter.id) }
             )
         }
@@ -1157,7 +1274,7 @@ private fun CollapsibleEdgeSidebar(
     isOpen: Boolean,
     animationSpeed: AnimationSpeed,
     filters: List<FilterItem>,
-    selectedFilterId: String,
+    selectedFilterIds: Set<String>,
     onToggleOpen: () -> Unit,
     onFilterSelected: (String) -> Unit
 ) {
@@ -1180,7 +1297,7 @@ private fun CollapsibleEdgeSidebar(
                 }
                 EdgeFilterListPanel(
                     filters = filters,
-                    selectedFilterId = selectedFilterId,
+                    selectedFilterIds = selectedFilterIds,
                     onFilterSelected = onFilterSelected
                 )
                 if (isLeft) {
@@ -1210,7 +1327,7 @@ private fun CollapsibleEdgeSidebar(
                     }
                     EdgeFilterListPanel(
                         filters = filters,
-                        selectedFilterId = selectedFilterId,
+                        selectedFilterIds = selectedFilterIds,
                         onFilterSelected = onFilterSelected
                     )
                     if (isLeft) {
@@ -1253,7 +1370,8 @@ private fun EdgeToggleTab(
         color = MaterialTheme.colorScheme.primaryContainer,
         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
         shape = shape,
-        tonalElevation = 4.dp,
+        tonalElevation = 6.dp,
+        shadowElevation = 4.dp,
         modifier = Modifier
             .width(26.dp)
             .height(68.dp)
@@ -1273,27 +1391,29 @@ private fun EdgeToggleTab(
 @Composable
 private fun EdgeFilterListPanel(
     filters: List<FilterItem>,
-    selectedFilterId: String,
+    selectedFilterIds: Set<String>,
     onFilterSelected: (String) -> Unit
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 8.dp,
+        shadowElevation = 8.dp,
         modifier = Modifier
-            .width(108.dp)
+            .width(124.dp)
             .fillMaxHeight()
     ) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .navigationBarsPadding(),
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             items(
                 items = filters,
                 key = { it.id }
             ) { filter ->
-                val isSelected = selectedFilterId == filter.id
+                val isSelected = filter.id in selectedFilterIds
                 val isLowStockTab = filter.isLowStockFilter
 
                 val bgColor = when {
@@ -1313,7 +1433,7 @@ private fun EdgeFilterListPanel(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(38.dp)
+                        .height(40.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .clickable { onFilterSelected(filter.id) }
                 ) {
@@ -1323,7 +1443,9 @@ private fun EdgeFilterListPanel(
                     ) {
                         Text(
                             text = filter.label,
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            ),
                             textAlign = TextAlign.Center,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
@@ -1427,15 +1549,14 @@ private fun InventoryItemRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(end = 12.dp)
-                    .alpha(if (isOutOfStock) 0.55f else 1f)
+                    .padding(end = 10.dp)
             ) {
                 Text(
                     text = item.name,
@@ -1445,22 +1566,34 @@ private fun InventoryItemRow(
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
                 )
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Text(
+                    text = "${item.category} • ${item.unit}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
+                )
+
+                Spacer(modifier = Modifier.height(5.dp))
 
                 Row(
                     modifier = Modifier.height(22.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = "${item.category} • ${item.unit}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    OpenedStatusBadge(
+                        isOpened = item.isOpened,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onToggleOpened(item)
+                        }
                     )
 
                     if (isOutOfStock) {
@@ -1474,16 +1607,6 @@ private fun InventoryItemRow(
                             text = "Kifogyóban",
                             containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                             contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                    }
-
-                    if (!isOutOfStock || item.isOpened) {
-                        OpenedStatusBadge(
-                            isOpened = item.isOpened,
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onToggleOpened(item)
-                            }
                         )
                     }
                 }
@@ -1535,7 +1658,7 @@ private fun InventoryItemRow(
                         else -> MaterialTheme.colorScheme.onSurface
                     },
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.width(56.dp)
+                    modifier = Modifier.width(52.dp)
                 )
 
                 FilledIconButton(
@@ -1573,7 +1696,7 @@ private fun OpenedStatusBadge(
     val txtColor = if (isOpened) {
         MaterialTheme.colorScheme.onPrimaryContainer
     } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
     }
 
     Surface(
@@ -1592,14 +1715,15 @@ private fun OpenedStatusBadge(
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.padding(horizontal = 6.dp)
+            modifier = Modifier.padding(horizontal = 7.dp)
         ) {
             Text(
                 text = if (isOpened) "Bontott ✓" else "Bontatlan",
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = if (isOpened) FontWeight.Bold else FontWeight.Medium
                 ),
-                maxLines = 1
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
@@ -1619,12 +1743,13 @@ private fun StatusBadge(
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.padding(horizontal = 6.dp)
+            modifier = Modifier.padding(horizontal = 7.dp)
         ) {
             Text(
                 text = text,
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                maxLines = 1
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
@@ -1634,29 +1759,27 @@ private fun StatusBadge(
 private fun EmptyInventoryState(
     isLowStockFilter: Boolean,
     hasSearchQuery: Boolean,
-    swipeUpEnabled: Boolean,
-    swipeDownEnabled: Boolean,
-    onSwipeUp: () -> Unit,
-    onSwipeDown: () -> Unit,
+    addItemGesture: GestureDirection,
+    onTriggerGesture: (GestureDirection) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var dragAccumulator by remember { mutableFloatStateOf(0f) }
+    var verticalDragAcc by remember { mutableFloatStateOf(0f) }
 
     Box(
         modifier = modifier
-            .pointerInput(swipeUpEnabled, swipeDownEnabled, onSwipeUp, onSwipeDown) {
+            .pointerInput(onTriggerGesture) {
                 detectVerticalDragGestures(
-                    onDragStart = { dragAccumulator = 0f },
-                    onDragEnd = { dragAccumulator = 0f },
-                    onDragCancel = { dragAccumulator = 0f },
+                    onDragStart = { verticalDragAcc = 0f },
+                    onDragEnd = { verticalDragAcc = 0f },
+                    onDragCancel = { verticalDragAcc = 0f },
                     onVerticalDrag = { _, dragAmount ->
-                        dragAccumulator += dragAmount
-                        if (dragAccumulator <= -90f && swipeUpEnabled) {
-                            dragAccumulator = 0f
-                            onSwipeUp()
-                        } else if (dragAccumulator >= 90f && swipeDownEnabled) {
-                            dragAccumulator = 0f
-                            onSwipeDown()
+                        verticalDragAcc += dragAmount
+                        if (verticalDragAcc <= -90f) {
+                            verticalDragAcc = 0f
+                            onTriggerGesture(GestureDirection.SWIPE_UP)
+                        } else if (verticalDragAcc >= 90f) {
+                            verticalDragAcc = 0f
+                            onTriggerGesture(GestureDirection.SWIPE_DOWN)
                         }
                     }
                 )
@@ -1688,9 +1811,9 @@ private fun EmptyInventoryState(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
-            if (swipeUpEnabled) {
+            if (addItemGesture != GestureDirection.NONE) {
                 Text(
-                    text = "Tipp: húzd felfelé a képernyőt új termék gyors felvételéhez!",
+                    text = "Tipp: húzd a képernyőt (${addItemGesture.label}) új termék gyors felvételéhez!",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
@@ -1795,7 +1918,7 @@ private fun ItemEditorSheetContent(
             .imePadding()
             .padding(horizontal = 20.dp)
             .padding(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1826,19 +1949,35 @@ private fun ItemEditorSheetContent(
             }
         }
 
-        OutlinedTextField(
-            value = name,
-            onValueChange = { name = it },
-            label = { Text("Termék neve") },
-            placeholder = { Text("pl. Tej 2.8%, Alufólia, Zsíroldó") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            keyboardOptions = KeyboardOptions(
-                capitalization = KeyboardCapitalization.Sentences,
-                imeAction = ImeAction.Next
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Termék neve") },
+                placeholder = { Text("pl. Tej 2.8%, Alufólia, Zsíroldó") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    imeAction = ImeAction.Next
+                )
             )
-        )
+
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                label = { Text("Megjegyzés (opcionális)") },
+                placeholder = { Text("pl. laktózmentes, kedvenc márka, lejárat...") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    imeAction = ImeAction.Done
+                )
+            )
+        }
 
         if (duplicateItem != null) {
             Surface(
@@ -1850,7 +1989,7 @@ private fun ItemEditorSheetContent(
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1905,7 +2044,7 @@ private fun ItemEditorSheetContent(
         }
 
         if (quickSuggestions.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = if (normalizedTypedName.isBlank()) "Gyors javaslatok" else "Találatok és javaslatok",
                     style = MaterialTheme.typography.labelLarge,
@@ -1932,21 +2071,6 @@ private fun ItemEditorSheetContent(
             }
         }
 
-        OutlinedTextField(
-            value = note,
-            onValueChange = { note = it },
-            label = { Text("Megjegyzés (opcionális)") },
-            placeholder = { Text("pl. laktózmentes, kedvenc márka, lejárat...") },
-            singleLine = false,
-            maxLines = 2,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            keyboardOptions = KeyboardOptions(
-                capitalization = KeyboardCapitalization.Sentences,
-                imeAction = ImeAction.Done
-            )
-        )
-
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             shape = RoundedCornerShape(14.dp),
@@ -1956,7 +2080,7 @@ private fun ItemEditorSheetContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { isOpened = !isOpened }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1966,7 +2090,7 @@ private fun ItemEditorSheetContent(
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Jelöld be, ha a csomagolás vagy palack már fel van bontva",
+                        text = "Jelöld be, ha a csomagolás már fel van bontva",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1978,7 +2102,7 @@ private fun ItemEditorSheetContent(
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = "Kategória",
                 style = MaterialTheme.typography.labelLarge,
@@ -1995,7 +2119,7 @@ private fun ItemEditorSheetContent(
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = "Mértékegység",
                 style = MaterialTheme.typography.labelLarge,
@@ -2012,7 +2136,7 @@ private fun ItemEditorSheetContent(
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = "Lépésköz",
                 style = MaterialTheme.typography.labelLarge,
@@ -2156,8 +2280,8 @@ private fun SettingsSheetContent(
     onColorPaletteChange: (AppColorPalette) -> Unit,
     onFilterPlacementChange: (FilterPlacement) -> Unit,
     onAnimationSpeedChange: (AnimationSpeed) -> Unit,
-    onSwipeUpToAddItemChange: (Boolean) -> Unit,
-    onSwipeDownToOpenSettingsChange: (Boolean) -> Unit,
+    onAddItemGestureChange: (GestureDirection) -> Unit,
+    onOpenSettingsGestureChange: (GestureDirection) -> Unit,
     onGroupByCategoryChange: (Boolean) -> Unit,
     onMoveFilter: (String, Int) -> Unit,
     onAddFilter: (String) -> Unit,
@@ -2301,37 +2425,13 @@ private fun SettingsSheetContent(
                 text = "Animáció stílusa",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
-            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    AnimationSpeed.entries.forEach { speed ->
-                        val isSelected = settings.animationSpeed == speed
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { onAnimationSpeedChange(speed) },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(34.dp),
-                            label = {
-                                Text(
-                                    text = speed.label,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textAlign = TextAlign.Center,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            },
-                            border = FilterChipDefaults.filterChipBorder(
-                                enabled = true,
-                                selected = isSelected,
-                                borderWidth = 1.dp,
-                                selectedBorderWidth = 1.dp,
-                                borderColor = MaterialTheme.colorScheme.outlineVariant,
-                                selectedBorderColor = Color.Transparent
-                            )
-                        )
-                    }
+            CompactChipFlowRow {
+                AnimationSpeed.entries.forEach { speed ->
+                    CompactFilterChip(
+                        selected = settings.animationSpeed == speed,
+                        onClick = { onAnimationSpeedChange(speed) },
+                        label = speed.label
+                    )
                 }
             }
         }
@@ -2354,9 +2454,9 @@ private fun SettingsSheetContent(
 
         HorizontalDivider()
 
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                text = "Nézet és gesztusok",
+                text = "Gesztusok és nézet",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
 
@@ -2382,48 +2482,46 @@ private fun SettingsSheetContent(
                 )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text(
-                        text = "Felfelé húzás: Új termék felvétele",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                    )
-                    Text(
-                        text = "A főoldalon felfelé húzva (a lista alján vagy üres képernyőn) megnyílik a termék hozzáadása",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = settings.swipeUpToAddItem,
-                    onCheckedChange = onSwipeUpToAddItemChange
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Új termék felvétele gesztussal",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
+                Text(
+                    text = "Válaszd ki, merre húzva a főképernyőt nyíljon meg az új termék felvétele:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CompactChipFlowRow {
+                    GestureDirection.entries.forEach { direction ->
+                        CompactFilterChip(
+                            selected = settings.addItemGesture == direction,
+                            onClick = { onAddItemGestureChange(direction) },
+                            label = direction.label
+                        )
+                    }
+                }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text(
-                        text = "Lefelé húzás: Beállítások megnyitása",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                    )
-                    Text(
-                        text = "A főoldalon lefelé húzva (a lista tetején vagy a felső sávon) megnyílnak a beállítások",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = settings.swipeDownToOpenSettings,
-                    onCheckedChange = onSwipeDownToOpenSettingsChange
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Beállítások megnyitása gesztussal",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
+                Text(
+                    text = "Válaszd ki, merre húzva a főképernyőt nyíljanak meg a beállítások:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CompactChipFlowRow {
+                    GestureDirection.entries.forEach { direction ->
+                        CompactFilterChip(
+                            selected = settings.openSettingsGesture == direction,
+                            onClick = { onOpenSettingsGestureChange(direction) },
+                            label = direction.label
+                        )
+                    }
+                }
             }
         }
 
