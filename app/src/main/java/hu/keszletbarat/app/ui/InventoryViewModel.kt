@@ -1,55 +1,76 @@
 package hu.keszletbarat.app.ui
 
+import android.app.Application
 import androidx.compose.runtime.Immutable
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.firestore.FirebaseFirestoreException
+import hu.keszletbarat.app.data.AnimationSpeed
+import hu.keszletbarat.app.data.AppColorPalette
+import hu.keszletbarat.app.data.AppSettings
+import hu.keszletbarat.app.data.FilterPlacement
 import hu.keszletbarat.app.data.InventoryRepository
-import hu.keszletbarat.app.model.CategoryFilter
+import hu.keszletbarat.app.data.SettingsRepository
+import hu.keszletbarat.app.data.ThemeMode
+import hu.keszletbarat.app.model.FilterItem
 import hu.keszletbarat.app.model.InventoryItem
+import hu.keszletbarat.app.model.SortDirection
+import hu.keszletbarat.app.model.SortField
+import hu.keszletbarat.app.model.cleanQuantity
+import hu.keszletbarat.app.model.normalizeForSearch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.text.Normalizer
 import java.util.UUID
 
 @Immutable
 data class InventoryUiState(
     val items: List<InventoryItem> = emptyList(),
+    val filters: List<FilterItem> = FilterItem.defaultFilters,
+    val productCategories: List<FilterItem> = FilterItem.defaultFilters.filter { it.isProductCategory },
+    val selectedFilterId: String = FilterItem.ID_ALL,
     val searchQuery: String = "",
-    val selectedCategory: CategoryFilter = CategoryFilter.ALL,
     val lowStockCount: Int = 0,
     val isLoading: Boolean = true,
-    val syncError: String? = null
+    val syncError: String? = null,
+    val settings: AppSettings = AppSettings()
+)
+
+private data class MergedDataState(
+    val allItems: List<InventoryItem>,
+    val filters: List<FilterItem>,
+    val errorMessage: String?
 )
 
 class InventoryViewModel(
-    private val repository: InventoryRepository = InventoryRepository()
-) : ViewModel() {
+    application: Application
+) : AndroidViewModel(application) {
+
+    private val repository = InventoryRepository()
+    private val settingsRepository = SettingsRepository(application)
 
     private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-
-    private val _selectedCategory = MutableStateFlow(CategoryFilter.ALL)
-    val selectedCategory: StateFlow<CategoryFilter> = _selectedCategory.asStateFlow()
+    private val _selectedFilterId = MutableStateFlow(FilterItem.ID_ALL)
 
     private val _optimisticOverrides = MutableStateFlow<Map<String, InventoryItem>>(emptyMap())
     private val _optimisticDeletedIds = MutableStateFlow<Set<String>>(emptySet())
+    private val _optimisticFilters = MutableStateFlow<Pair<Long, List<FilterItem>>?>(null)
     private val _writeError = MutableStateFlow<String?>(null)
+    private val _latestAllItems = MutableStateFlow<List<InventoryItem>>(emptyList())
 
     private val mergedStateFlow = combine(
         repository.observeItems(),
         _optimisticOverrides,
         _optimisticDeletedIds,
+        _optimisticFilters,
         _writeError
-    ) { syncResult, overrides, deletedIds, writeError ->
+    ) { syncResult, overrides, deletedIds, optimisticFiltersPair, writeError ->
         val remoteItems = syncResult.items
         val itemMap = LinkedHashMap<String, InventoryItem>(remoteItems.size + overrides.size)
         for (item in remoteItems) {
@@ -65,74 +86,149 @@ class InventoryViewModel(
                 }
             }
         }
-        val sorted = itemMap.values.sortedBy { it.name.lowercase() }
-        Pair(sorted, syncResult.errorMessage ?: writeError)
+
+        val activeFilters = when {
+            optimisticFiltersPair != null && optimisticFiltersPair.first >= syncResult.filtersUpdatedAt -> {
+                optimisticFiltersPair.second
+            }
+            syncResult.filters != null -> {
+                syncResult.filters
+            }
+            optimisticFiltersPair != null -> {
+                optimisticFiltersPair.second
+            }
+            else -> {
+                FilterItem.defaultFilters
+            }
+        }
+
+        val allItemsList = itemMap.values.toList()
+        _latestAllItems.value = allItemsList
+
+        MergedDataState(
+            allItems = allItemsList,
+            filters = activeFilters,
+            errorMessage = syncResult.errorMessage ?: writeError
+        )
     }.flowOn(Dispatchers.Default)
 
     val uiState: StateFlow<InventoryUiState> = combine(
         mergedStateFlow,
         _searchQuery,
-        _selectedCategory
-    ) { (allItems, errorMsg), query, category ->
-        val normalizedQuery = query.normalizeSearch()
-        val lowStockTotal = allItems.count { it.quantity == 0 || it.quantity <= it.minQuantity }
+        _selectedFilterId,
+        settingsRepository.settings
+    ) { merged, query, selectedId, currentSettings ->
+        val allItems = merged.allItems
+        val filters = merged.filters
+        val activeFilter = filters.firstOrNull { it.id == selectedId }
+            ?: filters.firstOrNull { it.isAllFilter }
+            ?: FilterItem.defaultFilters.first()
+
+        val normalizedQuery = query.normalizeForSearch()
+        val lowStockTotal = allItems.count { it.isLowStock }
 
         val filtered = allItems.filter { item ->
-            val matchesCategory = when (category) {
-                CategoryFilter.ALL -> true
-                CategoryFilter.LOW_STOCK -> item.quantity == 0 || item.quantity <= item.minQuantity
-                else -> item.category.equals(category.label, ignoreCase = true)
+            val matchesCategory = when {
+                activeFilter.isAllFilter -> true
+                activeFilter.isLowStockFilter -> item.isLowStock
+                else -> item.category.equals(activeFilter.label, ignoreCase = true)
             }
             val matchesQuery = if (normalizedQuery.isEmpty()) {
                 true
             } else {
-                item.name.normalizeSearch().contains(normalizedQuery)
+                item.normalizedName.contains(normalizedQuery)
             }
             matchesCategory && matchesQuery
         }
 
-        InventoryUiState(
+        val sorted = sortItems(
             items = filtered,
+            field = currentSettings.sortField,
+            direction = currentSettings.sortDirection
+        )
+
+        InventoryUiState(
+            items = sorted,
+            filters = filters,
+            productCategories = filters.filter { it.isProductCategory },
+            selectedFilterId = activeFilter.id,
             searchQuery = query,
-            selectedCategory = category,
             lowStockCount = lowStockTotal,
             isLoading = false,
-            syncError = errorMsg
+            syncError = merged.errorMessage,
+            settings = currentSettings
         )
     }
         .flowOn(Dispatchers.Default)
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = InventoryUiState()
+            initialValue = InventoryUiState(settings = settingsRepository.settings.value)
         )
+
+    private fun sortItems(
+        items: List<InventoryItem>,
+        field: SortField,
+        direction: SortDirection
+    ): List<InventoryItem> {
+        val nameAsc = Comparator<InventoryItem> { a, b ->
+            a.normalizedName.compareTo(b.normalizedName)
+        }
+        val finalComparator: Comparator<InventoryItem> = when (field) {
+            SortField.NAME -> if (direction == SortDirection.ASC) {
+                nameAsc
+            } else {
+                Comparator<InventoryItem> { a, b -> b.normalizedName.compareTo(a.normalizedName) }
+            }
+            SortField.QUANTITY -> if (direction == SortDirection.ASC) {
+                Comparator<InventoryItem> { a, b -> a.quantity.compareTo(b.quantity) }
+                    .thenComparing(nameAsc)
+            } else {
+                Comparator<InventoryItem> { a, b -> b.quantity.compareTo(a.quantity) }
+                    .thenComparing(nameAsc)
+            }
+            SortField.UNIT -> if (direction == SortDirection.ASC) {
+                Comparator<InventoryItem> { a, b -> a.lowercaseUnit.compareTo(b.lowercaseUnit) }
+                    .thenComparing(nameAsc)
+            } else {
+                Comparator<InventoryItem> { a, b -> b.lowercaseUnit.compareTo(a.lowercaseUnit) }
+                    .thenComparing(nameAsc)
+            }
+        }
+        return items.sortedWith(finalComparator)
+    }
 
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query
     }
 
-    fun onCategorySelected(category: CategoryFilter) {
-        _selectedCategory.value = category
+    fun onFilterSelected(filterId: String) {
+        _selectedFilterId.value = filterId
     }
 
     fun incrementQuantity(item: InventoryItem) {
-        updateItemQuantity(item, item.quantity + 1)
+        val step = settingsRepository.settings.value.effectiveStepForUnit(item.unit)
+        val newQuantity = (item.quantity + step).cleanQuantity()
+        updateItemQuantity(item, newQuantity)
     }
 
     fun decrementQuantity(item: InventoryItem) {
-        if (item.quantity <= 0) return
-        updateItemQuantity(item, (item.quantity - 1).coerceAtLeast(0))
+        if (item.quantity <= 0.0) return
+        val step = settingsRepository.settings.value.effectiveStepForUnit(item.unit)
+        val newQuantity = (item.quantity - step).coerceAtLeast(0.0).cleanQuantity()
+        updateItemQuantity(item, newQuantity)
     }
 
-    private fun updateItemQuantity(item: InventoryItem, newQuantity: Int) {
+    private fun updateItemQuantity(item: InventoryItem, newQuantity: Double) {
+        val safeQuantity = newQuantity.coerceAtLeast(0.0).cleanQuantity()
         val updated = item.copy(
-            quantity = newQuantity,
+            quantity = safeQuantity,
             updatedAt = System.currentTimeMillis()
         )
         _optimisticOverrides.update { current -> current + (item.id to updated) }
         viewModelScope.launch {
             runCatching {
-                repository.updateQuantity(item.id, newQuantity)
+                repository.updateQuantity(item.id, safeQuantity)
                 _writeError.value = null
             }.onFailure { e ->
                 handleFirestoreError(e)
@@ -144,9 +240,9 @@ class InventoryViewModel(
         existingId: String?,
         name: String,
         category: String,
-        quantity: Int,
+        quantity: Double,
         unit: String,
-        minQuantity: Int
+        minQuantity: Double
     ) {
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) return
@@ -156,9 +252,9 @@ class InventoryViewModel(
             id = itemId,
             name = trimmedName,
             category = category,
-            quantity = quantity.coerceAtLeast(0),
+            quantity = quantity.coerceAtLeast(0.0).cleanQuantity(),
             unit = unit,
-            minQuantity = minQuantity.coerceAtLeast(0),
+            minQuantity = minQuantity.coerceAtLeast(0.0).cleanQuantity(),
             updatedAt = System.currentTimeMillis()
         )
 
@@ -187,6 +283,171 @@ class InventoryViewModel(
         }
     }
 
+    fun moveFilterOrder(filterId: String, direction: Int) {
+        val current = uiState.value.filters.toMutableList()
+        val index = current.indexOfFirst { it.id == filterId }
+        if (index == -1) return
+        val targetIndex = (index + direction).coerceIn(0, current.lastIndex)
+        if (index == targetIndex) return
+        val moved = current.removeAt(index)
+        current.add(targetIndex, moved)
+        persistFilterChanges(newFilters = current, categoryMigrations = emptyMap())
+    }
+
+    fun addFilter(label: String) {
+        val trimmed = label.trim()
+        if (trimmed.isEmpty()) return
+        val current = uiState.value.filters.toMutableList()
+        if (current.any { it.label.equals(trimmed, ignoreCase = true) }) return
+
+        val newFilter = FilterItem(
+            id = "custom_${UUID.randomUUID().toString().take(8)}",
+            label = trimmed
+        )
+        val fallbackIndex = current.indexOfFirst { it.isFallbackCategory }
+        if (fallbackIndex != -1) {
+            current.add(fallbackIndex, newFilter)
+        } else {
+            current.add(newFilter)
+        }
+        persistFilterChanges(newFilters = current, categoryMigrations = emptyMap())
+    }
+
+    fun renameFilter(filterId: String, newLabel: String) {
+        val trimmed = newLabel.trim()
+        if (trimmed.isEmpty()) return
+        val current = uiState.value.filters.toMutableList()
+        val index = current.indexOfFirst { it.id == filterId }
+        if (index == -1) return
+
+        val existingFilter = current[index]
+        if (existingFilter.label == trimmed) return
+        if (current.any { it.id != filterId && it.label.equals(trimmed, ignoreCase = true) }) return
+
+        val oldLabel = existingFilter.label
+        current[index] = existingFilter.copy(label = trimmed)
+
+        val migrations = if (existingFilter.isProductCategory) {
+            mapOf(oldLabel to trimmed)
+        } else {
+            emptyMap()
+        }
+        persistFilterChanges(newFilters = current, categoryMigrations = migrations)
+    }
+
+    fun deleteFilter(filterId: String) {
+        val current = uiState.value.filters.toMutableList()
+        val target = current.firstOrNull { it.id == filterId } ?: return
+        if (!target.isDeletable) return
+
+        current.removeAll { it.id == filterId }
+        val fallbackLabel = current.firstOrNull { it.isFallbackCategory }?.label ?: "Egyéb"
+
+        if (_selectedFilterId.value == filterId) {
+            _selectedFilterId.value = FilterItem.ID_ALL
+        }
+
+        val migrations = mapOf(target.label to fallbackLabel)
+        persistFilterChanges(newFilters = current, categoryMigrations = migrations)
+    }
+
+    fun resetFilters() {
+        val defaultFilters = FilterItem.defaultFilters
+        val validCategoryLabels = FilterItem.defaultCategoryLabels
+        val fallbackLabel = "Egyéb"
+
+        val currentAllItems = _latestAllItems.value
+        val migrations = LinkedHashMap<String, String>()
+        for (item in currentAllItems) {
+            if (validCategoryLabels.none { it.equals(item.category, ignoreCase = true) }) {
+                migrations[item.category] = fallbackLabel
+            }
+        }
+
+        if (defaultFilters.none { it.id == _selectedFilterId.value }) {
+            _selectedFilterId.value = FilterItem.ID_ALL
+        }
+
+        persistFilterChanges(newFilters = defaultFilters, categoryMigrations = migrations)
+    }
+
+    private fun persistFilterChanges(
+        newFilters: List<FilterItem>,
+        categoryMigrations: Map<String, String>
+    ) {
+        val now = System.currentTimeMillis()
+        _optimisticFilters.value = Pair(now, newFilters)
+
+        val allCurrentItems = _latestAllItems.value
+        if (categoryMigrations.isNotEmpty()) {
+            _optimisticOverrides.update { currentOverrides ->
+                val updatedMap = LinkedHashMap(currentOverrides)
+                for (item in allCurrentItems) {
+                    val targetCategory = categoryMigrations.entries
+                        .firstOrNull { it.key.equals(item.category, ignoreCase = true) }
+                        ?.value
+                    if (targetCategory != null && targetCategory != item.category) {
+                        updatedMap[item.id] = item.copy(
+                            category = targetCategory,
+                            updatedAt = now
+                        )
+                    }
+                }
+                updatedMap
+            }
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                repository.saveFiltersAndMigrateItems(
+                    filters = newFilters,
+                    updatedAt = now,
+                    categoryMigrations = categoryMigrations,
+                    affectedItems = allCurrentItems
+                )
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
+            }
+        }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        settingsRepository.setThemeMode(mode)
+    }
+
+    fun setColorPalette(palette: AppColorPalette) {
+        settingsRepository.setColorPalette(palette)
+    }
+
+    fun setFilterPlacement(placement: FilterPlacement) {
+        settingsRepository.setFilterPlacement(placement)
+    }
+
+    fun setAnimationSpeed(speed: AnimationSpeed) {
+        settingsRepository.setAnimationSpeed(speed)
+    }
+
+    fun setDefaultMinQuantity(value: Double) {
+        settingsRepository.setDefaultMinQuantity(value)
+    }
+
+    fun setQuantityStep(step: Double) {
+        settingsRepository.setQuantityStep(step)
+    }
+
+    fun setFractionalOnlyForWeightAndVolume(enabled: Boolean) {
+        settingsRepository.setFractionalOnlyForWeightAndVolume(enabled)
+    }
+
+    fun setSortField(field: SortField) {
+        settingsRepository.setSortField(field)
+    }
+
+    fun setSortDirection(direction: SortDirection) {
+        settingsRepository.setSortDirection(direction)
+    }
+
     private fun handleFirestoreError(throwable: Throwable) {
         val firestoreException = throwable as? FirebaseFirestoreException
         _writeError.value = if (firestoreException?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
@@ -194,16 +455,5 @@ class InventoryViewModel(
         } else {
             throwable.localizedMessage ?: "Mentési hiba történt."
         }
-    }
-
-    private fun String.normalizeSearch(): String {
-        val trimmed = this.trim().lowercase()
-        if (trimmed.isEmpty()) return ""
-        val normalized = Normalizer.normalize(trimmed, Normalizer.Form.NFD)
-        return DIACRITICS_REGEX.replace(normalized, "")
-    }
-
-    companion object {
-        private val DIACRITICS_REGEX = "\\p{InCombiningDiacriticalMarks}+".toRegex()
     }
 }
