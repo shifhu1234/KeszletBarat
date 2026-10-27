@@ -2,10 +2,13 @@ package hu.keszletbarat.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -45,6 +48,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
@@ -74,6 +79,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -85,6 +91,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
@@ -131,6 +138,7 @@ fun InventoryScreen(
     var activeSheetItem by remember { mutableStateOf<InventoryItem?>(null) }
     var isEditorSheetVisible by rememberSaveable { mutableStateOf(false) }
     var isSettingsSheetVisible by rememberSaveable { mutableStateOf(false) }
+    var isEdgeSidebarOpen by rememberSaveable { mutableStateOf(false) }
 
     val onIncrementItem = remember(viewModel) { viewModel::incrementQuantity }
     val onDecrementItem = remember(viewModel) { viewModel::decrementQuantity }
@@ -213,12 +221,15 @@ fun InventoryScreen(
                     .padding(innerPadding)
             ) {
                 if (placement == FilterPlacement.LEFT_EDGE) {
-                    EdgeFilterSidebar(
+                    CollapsibleEdgeSidebar(
+                        isLeft = true,
+                        isOpen = isEdgeSidebarOpen,
+                        animationSpeed = animSpeed,
                         filters = uiState.filters,
                         selectedFilterId = uiState.selectedFilterId,
+                        onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
                         onFilterSelected = viewModel::onFilterSelected
                     )
-                    VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                 }
 
                 Box(
@@ -261,10 +272,13 @@ fun InventoryScreen(
                 }
 
                 if (placement == FilterPlacement.RIGHT_EDGE) {
-                    VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    EdgeFilterSidebar(
+                    CollapsibleEdgeSidebar(
+                        isLeft = false,
+                        isOpen = isEdgeSidebarOpen,
+                        animationSpeed = animSpeed,
                         filters = uiState.filters,
                         selectedFilterId = uiState.selectedFilterId,
+                        onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
                         onFilterSelected = viewModel::onFilterSelected
                     )
                 }
@@ -329,6 +343,7 @@ fun InventoryScreen(
     }
 }
 
+@OptIn(ExperimentalAnimationApi::class)
 @Composable
 private fun AdaptiveBottomSheet(
     visible: Boolean,
@@ -393,34 +408,32 @@ private fun AdaptiveBottomSheet(
                     ),
                 contentAlignment = Alignment.BottomCenter
             ) {
-                AnimatedVisibility(
-                    visible = visible,
-                    enter = slideInVertically(
-                        initialOffsetY = { it },
-                        animationSpec = tween(duration)
-                    ),
-                    exit = slideOutVertically(
-                        targetOffsetY = { it },
-                        animationSpec = tween(duration)
-                    )
-                ) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                        tonalElevation = 6.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = maxSheetHeight)
-                            .clickable(
-                                interactionSource = sheetInteraction,
-                                indication = null,
-                                onClick = {}
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                    tonalElevation = 6.dp,
+                    modifier = Modifier
+                        .animateEnterExit(
+                            enter = slideInVertically(
+                                initialOffsetY = { it },
+                                animationSpec = tween(duration)
+                            ),
+                            exit = slideOutVertically(
+                                targetOffsetY = { it },
+                                animationSpec = tween(duration)
                             )
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            SheetDragHandle()
-                            content()
-                        }
+                        )
+                        .fillMaxWidth()
+                        .heightIn(max = maxSheetHeight)
+                        .clickable(
+                            interactionSource = sheetInteraction,
+                            indication = null,
+                            onClick = {}
+                        )
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        SheetDragHandle()
+                        content()
                     }
                 }
             }
@@ -653,7 +666,7 @@ private fun InventoryTopBar(
 
             when (filterPlacement) {
                 FilterPlacement.TOP_BAR -> {
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     HorizontalFilterRow(
                         filters = filters,
                         selectedFilterId = selectedFilterId,
@@ -671,7 +684,7 @@ private fun InventoryTopBar(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Aktív szűrő: ${activeFilter.label}",
+                                text = "Szűrő: ${activeFilter.label}",
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -680,7 +693,7 @@ private fun InventoryTopBar(
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 modifier = Modifier.height(28.dp)
                             ) {
-                                Text("Összes mutatása", style = MaterialTheme.typography.labelMedium)
+                                Text("Összes", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -693,12 +706,14 @@ private fun InventoryTopBar(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { isCollapsibleOpen = !isCollapsibleOpen }
                     ) {
-                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { isCollapsibleOpen = !isCollapsibleOpen }
+                                    .padding(vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -730,18 +745,12 @@ private fun InventoryTopBar(
                             if (animationSpeed == AnimationSpeed.NONE) {
                                 if (isCollapsibleOpen) {
                                     Spacer(modifier = Modifier.height(8.dp))
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
+                                    CompactChipFlowRow {
                                         filters.forEach { filter ->
                                             StableFilterChip(
                                                 filter = filter,
                                                 isSelected = filter.id == selectedFilterId,
-                                                onClick = {
-                                                    onFilterSelected(filter.id)
-                                                    isCollapsibleOpen = false
-                                                }
+                                                onClick = { onFilterSelected(filter.id) }
                                             )
                                         }
                                     }
@@ -754,18 +763,12 @@ private fun InventoryTopBar(
                                 ) {
                                     Column {
                                         Spacer(modifier = Modifier.height(8.dp))
-                                        FlowRow(
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
+                                        CompactChipFlowRow {
                                             filters.forEach { filter ->
                                                 StableFilterChip(
                                                     filter = filter,
                                                     isSelected = filter.id == selectedFilterId,
-                                                    onClick = {
-                                                        onFilterSelected(filter.id)
-                                                        isCollapsibleOpen = false
-                                                    }
+                                                    onClick = { onFilterSelected(filter.id) }
                                                 )
                                             }
                                         }
@@ -809,6 +812,54 @@ private fun InventoryTopBar(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun CompactChipFlowRow(
+    content: @Composable () -> Unit
+) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            content()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CompactFilterChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        FilterChip(
+            selected = selected,
+            onClick = onClick,
+            modifier = modifier.height(32.dp),
+            leadingIcon = leadingIcon,
+            label = {
+                Text(
+                    text = label,
+                    fontWeight = FontWeight.Medium
+                )
+            },
+            border = FilterChipDefaults.filterChipBorder(
+                enabled = true,
+                selected = selected,
+                borderWidth = 1.dp,
+                selectedBorderWidth = 1.dp,
+                borderColor = MaterialTheme.colorScheme.outlineVariant,
+                selectedBorderColor = Color.Transparent
+            )
+        )
+    }
+}
+
 @Composable
 private fun HorizontalFilterRow(
     filters: List<FilterItem>,
@@ -818,7 +869,7 @@ private fun HorizontalFilterRow(
     LazyRow(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         items(
             items = filters,
@@ -834,7 +885,116 @@ private fun HorizontalFilterRow(
 }
 
 @Composable
-private fun EdgeFilterSidebar(
+private fun CollapsibleEdgeSidebar(
+    isLeft: Boolean,
+    isOpen: Boolean,
+    animationSpeed: AnimationSpeed,
+    filters: List<FilterItem>,
+    selectedFilterId: String,
+    onToggleOpen: () -> Unit,
+    onFilterSelected: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxHeight(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (!isLeft) {
+            EdgeToggleTab(
+                isLeft = false,
+                isOpen = isOpen,
+                onClick = onToggleOpen
+            )
+        }
+
+        if (animationSpeed == AnimationSpeed.NONE) {
+            if (isOpen) {
+                if (!isLeft) {
+                    VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                }
+                EdgeFilterListPanel(
+                    filters = filters,
+                    selectedFilterId = selectedFilterId,
+                    onFilterSelected = onFilterSelected
+                )
+                if (isLeft) {
+                    VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                }
+            }
+        } else {
+            val duration = animationSpeed.durationMillis
+            AnimatedVisibility(
+                visible = isOpen,
+                enter = expandHorizontally(animationSpec = tween(duration)),
+                exit = shrinkHorizontally(animationSpec = tween(duration))
+            ) {
+                Row(modifier = Modifier.fillMaxHeight()) {
+                    if (!isLeft) {
+                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    }
+                    EdgeFilterListPanel(
+                        filters = filters,
+                        selectedFilterId = selectedFilterId,
+                        onFilterSelected = onFilterSelected
+                    )
+                    if (isLeft) {
+                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    }
+                }
+            }
+        }
+
+        if (isLeft) {
+            EdgeToggleTab(
+                isLeft = true,
+                isOpen = isOpen,
+                onClick = onToggleOpen
+            )
+        }
+    }
+}
+
+@Composable
+private fun EdgeToggleTab(
+    isLeft: Boolean,
+    isOpen: Boolean,
+    onClick: () -> Unit
+) {
+    val shape = if (isLeft) {
+        RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp)
+    } else {
+        RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp)
+    }
+
+    val icon = when {
+        isLeft && isOpen -> Icons.AutoMirrored.Filled.KeyboardArrowLeft
+        isLeft && !isOpen -> Icons.AutoMirrored.Filled.KeyboardArrowRight
+        !isLeft && isOpen -> Icons.AutoMirrored.Filled.KeyboardArrowRight
+        else -> Icons.AutoMirrored.Filled.KeyboardArrowLeft
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shape = shape,
+        tonalElevation = 4.dp,
+        modifier = Modifier
+            .width(26.dp)
+            .height(68.dp)
+            .clip(shape)
+            .clickable(onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = "Oldalsáv nyitása/zárása",
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun EdgeFilterListPanel(
     filters: List<FilterItem>,
     selectedFilterId: String,
     onFilterSelected: (String) -> Unit
@@ -842,7 +1002,7 @@ private fun EdgeFilterSidebar(
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier
-            .width(104.dp)
+            .width(108.dp)
             .fillMaxHeight()
     ) {
         LazyColumn(
@@ -850,7 +1010,7 @@ private fun EdgeFilterSidebar(
                 .fillMaxSize()
                 .navigationBarsPadding(),
             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             items(
                 items = filters,
@@ -873,11 +1033,11 @@ private fun EdgeFilterSidebar(
                 Surface(
                     color = bgColor,
                     contentColor = txtColor,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(10.dp))
                         .clickable { onFilterSelected(filter.id) }
                 ) {
                     Box(
@@ -898,6 +1058,7 @@ private fun EdgeFilterSidebar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun StableFilterChip(
     filter: FilterItem,
@@ -905,43 +1066,45 @@ private fun StableFilterChip(
     onClick: () -> Unit
 ) {
     val isLowStockTab = filter.isLowStockFilter
-    FilterChip(
-        selected = isSelected,
-        onClick = onClick,
-        modifier = Modifier.height(36.dp),
-        label = {
-            Text(
-                text = filter.label,
-                fontWeight = FontWeight.Medium
-            )
-        },
-        leadingIcon = if (isLowStockTab) {
-            {
-                Icon(
-                    imageVector = Icons.Default.ShoppingCart,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        } else null,
-        border = FilterChipDefaults.filterChipBorder(
-            enabled = true,
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        FilterChip(
             selected = isSelected,
-            borderWidth = 1.dp,
-            selectedBorderWidth = 1.dp,
-            borderColor = MaterialTheme.colorScheme.outlineVariant,
-            selectedBorderColor = Color.Transparent
-        ),
-        colors = if (isLowStockTab) {
-            FilterChipDefaults.filterChipColors(
-                selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
-                selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer,
-                selectedLeadingIconColor = MaterialTheme.colorScheme.onErrorContainer
-            )
-        } else {
-            FilterChipDefaults.filterChipColors()
-        }
-    )
+            onClick = onClick,
+            modifier = Modifier.height(32.dp),
+            label = {
+                Text(
+                    text = filter.label,
+                    fontWeight = FontWeight.Medium
+                )
+            },
+            leadingIcon = if (isLowStockTab) {
+                {
+                    Icon(
+                        imageVector = Icons.Default.ShoppingCart,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            } else null,
+            border = FilterChipDefaults.filterChipBorder(
+                enabled = true,
+                selected = isSelected,
+                borderWidth = 1.dp,
+                selectedBorderWidth = 1.dp,
+                borderColor = MaterialTheme.colorScheme.outlineVariant,
+                selectedBorderColor = Color.Transparent
+            ),
+            colors = if (isLowStockTab) {
+                FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer,
+                    selectedLeadingIconColor = MaterialTheme.colorScheme.onErrorContainer
+                )
+            } else {
+                FilterChipDefaults.filterChipColors()
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1161,7 +1324,6 @@ private fun EmptyInventoryState(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ItemEditorSheetContent(
     initialItem: InventoryItem?,
@@ -1212,7 +1374,7 @@ private fun ItemEditorSheetContent(
             .imePadding()
             .padding(horizontal = 20.dp)
             .padding(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1263,29 +1425,12 @@ private fun ItemEditorSheetContent(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
+            CompactChipFlowRow {
                 productCategories.forEach { category ->
-                    val isSelected = selectedCategory.equals(category.label, ignoreCase = true)
-                    FilterChip(
-                        selected = isSelected,
+                    CompactFilterChip(
+                        selected = selectedCategory.equals(category.label, ignoreCase = true),
                         onClick = { selectedCategory = category.label },
-                        label = {
-                            Text(
-                                text = category.label,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = isSelected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        )
+                        label = category.label
                     )
                 }
             }
@@ -1297,29 +1442,12 @@ private fun ItemEditorSheetContent(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
+            CompactChipFlowRow {
                 InventoryUnits.all.forEach { unit ->
-                    val isSelected = selectedUnit == unit
-                    FilterChip(
-                        selected = isSelected,
+                    CompactFilterChip(
+                        selected = selectedUnit == unit,
                         onClick = { selectedUnit = unit },
-                        label = {
-                            Text(
-                                text = unit,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = isSelected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        )
+                        label = unit
                     )
                 }
             }
@@ -1327,33 +1455,16 @@ private fun ItemEditorSheetContent(
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Lépésköz (érték-köz)",
+                text = "Lépésköz",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
+            CompactChipFlowRow {
                 AppSettings.availableSteps.forEach { stepOption ->
-                    val isSelected = stepSize == stepOption
-                    FilterChip(
-                        selected = isSelected,
+                    CompactFilterChip(
+                        selected = stepSize == stepOption,
                         onClick = { stepSize = stepOption },
-                        label = {
-                            Text(
-                                text = "±${stepOption.formatQuantity()} $selectedUnit",
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = isSelected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        )
+                        label = "±${stepOption.formatQuantity()} $selectedUnit"
                     )
                 }
             }
@@ -1474,7 +1585,7 @@ private fun ItemEditorSheetContent(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsSheetContent(
     settings: AppSettings,
@@ -1544,63 +1655,64 @@ private fun SettingsSheetContent(
             .imePadding()
             .padding(horizontal = 20.dp)
             .padding(bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         Text(
             text = "Beállítások",
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
         )
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Megjelenés módja (saját készülék)",
+                text = "Megjelenés módja",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                ThemeMode.entries.forEach { mode ->
-                    val isSelected = settings.themeMode == mode
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onThemeModeChange(mode) },
-                        label = {
-                            Text(
-                                text = mode.label,
-                                modifier = Modifier.fillMaxWidth(),
-                                textAlign = TextAlign.Center,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
+            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ThemeMode.entries.forEach { mode ->
+                        val isSelected = settings.themeMode == mode
+                        FilterChip(
                             selected = isSelected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
+                            onClick = { onThemeModeChange(mode) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp),
+                            label = {
+                                Text(
+                                    text = mode.label,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            },
+                            border = FilterChipDefaults.filterChipBorder(
+                                enabled = true,
+                                selected = isSelected,
+                                borderWidth = 1.dp,
+                                selectedBorderWidth = 1.dp,
+                                borderColor = MaterialTheme.colorScheme.outlineVariant,
+                                selectedBorderColor = Color.Transparent
+                            )
+                        )
+                    }
                 }
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Színpaletta (saját készülék)",
+                text = "Színpaletta",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+            CompactChipFlowRow {
                 AppColorPalette.entries.forEach { palette ->
-                    val selected = settings.colorPalette == palette
-                    FilterChip(
-                        selected = selected,
+                    CompactFilterChip(
+                        selected = settings.colorPalette == palette,
                         onClick = { onColorPaletteChange(palette) },
+                        label = palette.label,
                         leadingIcon = {
                             Box(
                                 modifier = Modifier
@@ -1613,95 +1725,63 @@ private fun SettingsSheetContent(
                                         shape = CircleShape
                                     )
                             )
-                        },
-                        label = {
-                            Text(
-                                text = palette.label,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = selected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        )
+                        }
                     )
                 }
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Animációk sebessége (ablakok, menük)",
+                text = "Animációk sebessége",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AnimationSpeed.entries.forEach { speed ->
-                    val isSelected = settings.animationSpeed == speed
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onAnimationSpeedChange(speed) },
-                        label = {
-                            Text(
-                                text = speed.label,
-                                modifier = Modifier.fillMaxWidth(),
-                                textAlign = TextAlign.Center,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
+            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    AnimationSpeed.entries.forEach { speed ->
+                        val isSelected = settings.animationSpeed == speed
+                        FilterChip(
                             selected = isSelected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
+                            onClick = { onAnimationSpeedChange(speed) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp),
+                            label = {
+                                Text(
+                                    text = speed.label,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            },
+                            border = FilterChipDefaults.filterChipBorder(
+                                enabled = true,
+                                selected = isSelected,
+                                borderWidth = 1.dp,
+                                selectedBorderWidth = 1.dp,
+                                borderColor = MaterialTheme.colorScheme.outlineVariant,
+                                selectedBorderColor = Color.Transparent
+                            )
+                        )
+                    }
                 }
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Szűrők elhelyezkedése a képernyőn",
+                text = "Szűrők elhelyezkedése",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
-            Text(
-                text = "Válaszd ki, hol legyenek elérhetőek a kategória-szűrők a főképernyőn.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+            CompactChipFlowRow {
                 FilterPlacement.entries.forEach { placement ->
-                    val isSelected = settings.filterPlacement == placement
-                    FilterChip(
-                        selected = isSelected,
+                    CompactFilterChip(
+                        selected = settings.filterPlacement == placement,
                         onClick = { onFilterPlacementChange(placement) },
-                        label = {
-                            Text(
-                                text = placement.label,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = isSelected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        )
+                        label = placement.label
                     )
                 }
             }
@@ -1709,47 +1789,23 @@ private fun SettingsSheetContent(
 
         HorizontalDivider()
 
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                text = "Mennyiség lépésköze (érték-köz)",
+                text = "Mennyiség lépésköze",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
             Text(
-                text = "Meghatározza, hogy a + és - gombok milyen értékkel növeljék vagy csökkentsék a mennyiséget (pl. 0.5 fél kg-hoz).",
+                text = "Meghatározza, hogy a + és - gombok milyen értékkel növeljék vagy csökkentsék a mennyiséget.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+            CompactChipFlowRow {
                 AppSettings.availableSteps.forEach { step ->
-                    val isSelected = settings.quantityStep == step
-                    FilterChip(
-                        selected = isSelected,
+                    CompactFilterChip(
+                        selected = settings.quantityStep == step,
                         onClick = { onQuantityStepChange(step) },
-                        label = {
-                            val labelText = when (step) {
-                                1.0 -> "1 (Egész)"
-                                0.5 -> "0.5 (Fél)"
-                                0.25 -> "0.25 (Negyed)"
-                                0.1 -> "0.1 (Tized)"
-                                else -> step.formatQuantity()
-                            }
-                            Text(
-                                text = labelText,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = isSelected,
-                            borderWidth = 1.dp,
-                            selectedBorderWidth = 1.dp,
-                            borderColor = MaterialTheme.colorScheme.outlineVariant,
-                            selectedBorderColor = Color.Transparent
-                        )
+                        label = step.formatQuantity()
                     )
                 }
             }
@@ -1792,7 +1848,7 @@ private fun SettingsSheetContent(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                 )
                 Text(
-                    text = "Új termék felvételekor ez az érték lesz előre beírva (0 esetén csak akkor jelez kifogyottat, ha 0-ra csökken).",
+                    text = "Új termék felvételekor ez az érték lesz előre beírva.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1832,7 +1888,7 @@ private fun SettingsSheetContent(
 
         HorizontalDivider()
 
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1840,7 +1896,7 @@ private fun SettingsSheetContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Szűrők és kategóriák (közös)",
+                        text = "Szűrők és kategóriák",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(

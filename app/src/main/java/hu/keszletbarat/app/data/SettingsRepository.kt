@@ -22,16 +22,22 @@ enum class AppColorPalette(val label: String, val previewHex: Long) {
     OCEAN("Óceán", 0xFF0061A4),
     SUNSET("Naplemente", 0xFF9C4146),
     LAVENDER("Levendula", 0xFF6B538C),
-    ROSE("Rózsa", 0xFF984061)
+    ROSE("Rózsa", 0xFF984061),
+    GOLD("Borostyán", 0xFF785900),
+    TEAL("Türkiz", 0xFF006874),
+    INDIGO("Indigó", 0xFF4355B9),
+    FOREST("Erdő", 0xFF2E6C00),
+    COFFEE("Kávé", 0xFF705845),
+    GRAPHITE("Grafit", 0xFF45474A)
 }
 
 enum class FilterPlacement(val label: String) {
-    TOP_BAR("Felül (Vízszintes sáv)"),
-    BOTTOM_BAR("Alul (Hüvelykujjnál)"),
-    LEFT_EDGE("Bal szélen (Oldalsáv)"),
-    RIGHT_EDGE("Jobb szélen (Oldalsáv)"),
+    TOP_BAR("Felül"),
+    BOTTOM_BAR("Alul"),
+    LEFT_EDGE("Bal oldalsáv"),
+    RIGHT_EDGE("Jobb oldalsáv"),
     COLLAPSIBLE_PANEL("Kinyithatós menü"),
-    TOP_DROPDOWN("Felső gomb (Mint a rendezés)")
+    TOP_DROPDOWN("Felső gomb")
 }
 
 enum class AnimationSpeed(val label: String, val durationMillis: Int) {
