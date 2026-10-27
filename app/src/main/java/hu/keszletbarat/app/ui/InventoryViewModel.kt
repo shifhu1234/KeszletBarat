@@ -11,6 +11,7 @@ import hu.keszletbarat.app.data.AppSettings
 import hu.keszletbarat.app.data.FilterPlacement
 import hu.keszletbarat.app.data.GestureDirection
 import hu.keszletbarat.app.data.InventoryRepository
+import hu.keszletbarat.app.data.ItemLayoutMode
 import hu.keszletbarat.app.data.SettingsRepository
 import hu.keszletbarat.app.data.ThemeMode
 import hu.keszletbarat.app.model.FilterItem
@@ -219,6 +220,13 @@ class InventoryViewModel(
                     .thenComparing(nameAsc)
             } else {
                 Comparator<InventoryItem> { a, b -> b.lowercaseUnit.compareTo(a.lowercaseUnit) }
+                    .thenComparing(nameAsc)
+            }
+            SortField.OPENED -> if (direction == SortDirection.ASC) {
+                Comparator<InventoryItem> { a, b -> b.isOpened.compareTo(a.isOpened) }
+                    .thenComparing(nameAsc)
+            } else {
+                Comparator<InventoryItem> { a, b -> a.isOpened.compareTo(b.isOpened) }
                     .thenComparing(nameAsc)
             }
         }
@@ -521,6 +529,10 @@ class InventoryViewModel(
 
     fun setAnimationSpeed(speed: AnimationSpeed) {
         settingsRepository.setAnimationSpeed(speed)
+    }
+
+    fun setItemLayoutMode(mode: ItemLayoutMode) {
+        settingsRepository.setItemLayoutMode(mode)
     }
 
     fun setAddItemGesture(direction: GestureDirection) {

@@ -343,6 +343,246 @@ private val GraphiteDarkColors = darkColorScheme(
     onTertiaryContainer = Color(0xFFD4E4F2)
 )
 
+private val CrimsonLightColors = lightColorScheme(
+    primary = Color(0xFFB3261E),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFF9DEDC),
+    onPrimaryContainer = Color(0xFF410E0B),
+    secondary = Color(0xFF775652),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFFFDAD5),
+    onSecondaryContainer = Color(0xFF2C1512),
+    tertiary = Color(0xFF705C2E),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFFCE0A6),
+    onTertiaryContainer = Color(0xFF251A00)
+)
+
+private val CrimsonDarkColors = darkColorScheme(
+    primary = Color(0xFFF2B8B5),
+    onPrimary = Color(0xFF601410),
+    primaryContainer = Color(0xFF8C1D18),
+    onPrimaryContainer = Color(0xFFF9DEDC),
+    secondary = Color(0xFFE7BDB7),
+    onSecondary = Color(0xFF442926),
+    secondaryContainer = Color(0xFF5D3F3B),
+    onSecondaryContainer = Color(0xFFFFDAD5),
+    tertiary = Color(0xFFDFC38C),
+    onTertiary = Color(0xFF3E2E04),
+    tertiaryContainer = Color(0xFF574419),
+    onTertiaryContainer = Color(0xFFFCE0A6)
+)
+
+private val CoralLightColors = lightColorScheme(
+    primary = Color(0xFFB84327),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFFFDBD2),
+    onPrimaryContainer = Color(0xFF3C0800),
+    secondary = Color(0xFF77574F),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFFFDBD2),
+    onSecondaryContainer = Color(0xFF2C1510),
+    tertiary = Color(0xFF6D5D2E),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFF7E1A6),
+    onTertiaryContainer = Color(0xFF231B00)
+)
+
+private val CoralDarkColors = darkColorScheme(
+    primary = Color(0xFFFFB4A1),
+    onPrimary = Color(0xFF621200),
+    primaryContainer = Color(0xFF8B290F),
+    onPrimaryContainer = Color(0xFFFFDBD2),
+    secondary = Color(0xFFE7BDB3),
+    onSecondary = Color(0xFF442923),
+    secondaryContainer = Color(0xFF5D3F38),
+    onSecondaryContainer = Color(0xFFFFDBD2),
+    tertiary = Color(0xFFDABFA0),
+    onTertiary = Color(0xFF3B2F04),
+    tertiaryContainer = Color(0xFF534519),
+    onTertiaryContainer = Color(0xFFF7E1A6)
+)
+
+private val MintLightColors = lightColorScheme(
+    primary = Color(0xFF006B58),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFF7BF8D8),
+    onPrimaryContainer = Color(0xFF002019),
+    secondary = Color(0xFF4B635B),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFCDE8DE),
+    onSecondaryContainer = Color(0xFF072019),
+    tertiary = Color(0xFF426277),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFC7E7FF),
+    onTertiaryContainer = Color(0xFF001E2E)
+)
+
+private val MintDarkColors = darkColorScheme(
+    primary = Color(0xFF5CDBBC),
+    onPrimary = Color(0xFF00382D),
+    primaryContainer = Color(0xFF005142),
+    onPrimaryContainer = Color(0xFF7BF8D8),
+    secondary = Color(0xFFB1CCC2),
+    onSecondary = Color(0xFF1D352E),
+    secondaryContainer = Color(0xFF334B44),
+    onSecondaryContainer = Color(0xFFCDE8DE),
+    tertiary = Color(0xFFAAD0E9),
+    onTertiary = Color(0xFF103447),
+    tertiaryContainer = Color(0xFF294A5E),
+    onTertiaryContainer = Color(0xFFC7E7FF)
+)
+
+private val SkyLightColors = lightColorScheme(
+    primary = Color(0xFF006493),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFCAE6FF),
+    onPrimaryContainer = Color(0xFF001E30),
+    secondary = Color(0xFF50606E),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFD3E5F5),
+    onSecondaryContainer = Color(0xFF0C1D29),
+    tertiary = Color(0xFF65587B),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFEBDDFF),
+    onTertiaryContainer = Color(0xFF201634)
+)
+
+private val SkyDarkColors = darkColorScheme(
+    primary = Color(0xFF8DCDFF),
+    onPrimary = Color(0xFF00344F),
+    primaryContainer = Color(0xFF004B70),
+    onPrimaryContainer = Color(0xFFCAE6FF),
+    secondary = Color(0xFFB7C9D9),
+    onSecondary = Color(0xFF22323F),
+    secondaryContainer = Color(0xFF384956),
+    onSecondaryContainer = Color(0xFFD3E5F5),
+    tertiary = Color(0xFFCFC0E8),
+    onTertiary = Color(0xFF362B4A),
+    tertiaryContainer = Color(0xFF4D4162),
+    onTertiaryContainer = Color(0xFFEBDDFF)
+)
+
+private val PlumLightColors = lightColorScheme(
+    primary = Color(0xFF7B2D7E),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFFFD6FC),
+    onPrimaryContainer = Color(0xFF310035),
+    secondary = Color(0xFF6B586B),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFF4DBF1),
+    onSecondaryContainer = Color(0xFF251626),
+    tertiary = Color(0xFF82524A),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFFFDAD4),
+    onTertiaryContainer = Color(0xFF33110C)
+)
+
+private val PlumDarkColors = darkColorScheme(
+    primary = Color(0xFFF9ABFF),
+    onPrimary = Color(0xFF49124D),
+    primaryContainer = Color(0xFF612B65),
+    onPrimaryContainer = Color(0xFFFFD6FC),
+    secondary = Color(0xFFD7BFD5),
+    onSecondary = Color(0xFF3B2B3C),
+    secondaryContainer = Color(0xFF534153),
+    onSecondaryContainer = Color(0xFFF4DBF1),
+    tertiary = Color(0xFFF6B8AD),
+    onTertiary = Color(0xFF4C251F),
+    tertiaryContainer = Color(0xFF663B34),
+    onTertiaryContainer = Color(0xFFFFDAD4)
+)
+
+private val OliveLightColors = lightColorScheme(
+    primary = Color(0xFF556500),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFD7ED7B),
+    onPrimaryContainer = Color(0xFF181E00),
+    secondary = Color(0xFF5C6146),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFE1E6C3),
+    onSecondaryContainer = Color(0xFF191D08),
+    tertiary = Color(0xFF3A665D),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFBCECE0),
+    onTertiaryContainer = Color(0xFF00201B)
+)
+
+private val OliveDarkColors = darkColorScheme(
+    primary = Color(0xFFbbd063),
+    onPrimary = Color(0xFF2B3400),
+    primaryContainer = Color(0xFF3F4C00),
+    onPrimaryContainer = Color(0xFFD7ED7B),
+    secondary = Color(0xFFC5CAA9),
+    onSecondary = Color(0xFF2E331B),
+    secondaryContainer = Color(0xFF444930),
+    onSecondaryContainer = Color(0xFFE1E6C3),
+    tertiary = Color(0xFFA1D0C4),
+    onTertiary = Color(0xFF04372F),
+    tertiaryContainer = Color(0xFF214E45),
+    onTertiaryContainer = Color(0xFFBCECE0)
+)
+
+private val ChocolateLightColors = lightColorScheme(
+    primary = Color(0xFF834C24),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFFFDBC7),
+    onPrimaryContainer = Color(0xFF301400),
+    secondary = Color(0xFF745947),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFFFDBC7),
+    onSecondaryContainer = Color(0xFF2A170A),
+    tertiary = Color(0xFF606034),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFE6E5AD),
+    onTertiaryContainer = Color(0xFF1C1D00)
+)
+
+private val ChocolateDarkColors = darkColorScheme(
+    primary = Color(0xFFFAB88C),
+    onPrimary = Color(0xFF4C2604),
+    primaryContainer = Color(0xFF673B18),
+    onPrimaryContainer = Color(0xFFFFDBC7),
+    secondary = Color(0xFFE4BFA9),
+    onSecondary = Color(0xFF422B1C),
+    secondaryContainer = Color(0xFF5A4131),
+    onSecondaryContainer = Color(0xFFFFDBC7),
+    tertiary = Color(0xFFCAC993),
+    onTertiary = Color(0xFF32320A),
+    tertiaryContainer = Color(0xFF48481F),
+    onTertiaryContainer = Color(0xFFE6E5AD)
+)
+
+private val SlateLightColors = lightColorScheme(
+    primary = Color(0xFF3E5F73),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFC3E4FA),
+    onPrimaryContainer = Color(0xFF001E2C),
+    secondary = Color(0xFF536069),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFD7E4EE),
+    onSecondaryContainer = Color(0xFF101D25),
+    tertiary = Color(0xFF655972),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFECDCFA),
+    onTertiaryContainer = Color(0xFF20172C)
+)
+
+private val SlateDarkColors = darkColorScheme(
+    primary = Color(0xFFA7C8DD),
+    onPrimary = Color(0xFF093143),
+    primaryContainer = Color(0xFF25475B),
+    onPrimaryContainer = Color(0xFFC3E4FA),
+    secondary = Color(0xFFBBC8D2),
+    onSecondary = Color(0xFF25323A),
+    secondaryContainer = Color(0xFF3C4851),
+    onSecondaryContainer = Color(0xFFD7E4EE),
+    tertiary = Color(0xFFD0C0DE),
+    onTertiary = Color(0xFF362B42),
+    tertiaryContainer = Color(0xFF4D4159),
+    onTertiaryContainer = Color(0xFFECDCFA)
+)
+
 @Composable
 fun KeszletBaratTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -371,6 +611,14 @@ fun KeszletBaratTheme(
         AppColorPalette.FOREST -> if (useDarkTheme) ForestDarkColors else ForestLightColors
         AppColorPalette.COFFEE -> if (useDarkTheme) CoffeeDarkColors else CoffeeLightColors
         AppColorPalette.GRAPHITE -> if (useDarkTheme) GraphiteDarkColors else GraphiteLightColors
+        AppColorPalette.CRIMSON -> if (useDarkTheme) CrimsonDarkColors else CrimsonLightColors
+        AppColorPalette.CORAL -> if (useDarkTheme) CoralDarkColors else CoralLightColors
+        AppColorPalette.MINT -> if (useDarkTheme) MintDarkColors else MintLightColors
+        AppColorPalette.SKY -> if (useDarkTheme) SkyDarkColors else SkyLightColors
+        AppColorPalette.PLUM -> if (useDarkTheme) PlumDarkColors else PlumLightColors
+        AppColorPalette.OLIVE -> if (useDarkTheme) OliveDarkColors else OliveLightColors
+        AppColorPalette.CHOCOLATE -> if (useDarkTheme) ChocolateDarkColors else ChocolateLightColors
+        AppColorPalette.SLATE -> if (useDarkTheme) SlateDarkColors else SlateLightColors
     }
 
     MaterialTheme(

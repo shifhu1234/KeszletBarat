@@ -1,5 +1,6 @@
 package hu.keszletbarat.app.ui
 
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -24,8 +25,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,6 +50,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -104,7 +109,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -113,15 +118,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -139,6 +145,7 @@ import hu.keszletbarat.app.data.AppColorPalette
 import hu.keszletbarat.app.data.AppSettings
 import hu.keszletbarat.app.data.FilterPlacement
 import hu.keszletbarat.app.data.GestureDirection
+import hu.keszletbarat.app.data.ItemLayoutMode
 import hu.keszletbarat.app.data.ThemeMode
 import hu.keszletbarat.app.model.CommonHouseholdSuggestions
 import hu.keszletbarat.app.model.FilterItem
@@ -150,6 +157,7 @@ import hu.keszletbarat.app.model.SortField
 import hu.keszletbarat.app.model.cleanQuantity
 import hu.keszletbarat.app.model.formatQuantity
 import hu.keszletbarat.app.widget.KeszletWidgetManager
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -159,16 +167,19 @@ fun InventoryScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val pendingWidgetAction by viewModel.pendingWidgetAction.collectAsStateWithLifecycle()
     val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current.density
 
     var activeSheetItem by remember { mutableStateOf<InventoryItem?>(null) }
     var isEditorSheetVisible by rememberSaveable { mutableStateOf(false) }
     var isSettingsSheetVisible by rememberSaveable { mutableStateOf(false) }
     var isEdgeSidebarOpen by rememberSaveable { mutableStateOf(false) }
+    var editorOpenSessionCounter by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(pendingWidgetAction) {
         if (pendingWidgetAction == KeszletWidgetManager.ACTION_OPEN_ADD_ITEM) {
             isSettingsSheetVisible = false
             activeSheetItem = null
+            editorOpenSessionCounter = SystemClock.uptimeMillis()
             isEditorSheetVisible = true
             viewModel.consumeWidgetAction()
         }
@@ -186,21 +197,29 @@ fun InventoryScreen(
 
     val placement = uiState.settings.filterPlacement
     val animSpeed = uiState.settings.animationSpeed
+    val layoutMode = uiState.settings.itemLayoutMode
     val addGesture = uiState.settings.addItemGesture
     val settingsGesture = uiState.settings.openSettingsGesture
-    val canTriggerMainGestures = !isEditorSheetVisible && !isSettingsSheetVisible
+    val canTriggerMainGestures = !isEditorSheetVisible && !isSettingsSheetVisible && !isEdgeSidebarOpen
+
+    var lastGestureTriggerTime by remember { mutableLongStateOf(0L) }
+    var lastTouchDownTime by remember { mutableLongStateOf(0L) }
 
     val isDirectionAssigned = { dir: GestureDirection ->
         dir != GestureDirection.NONE && (addGesture == dir || settingsGesture == dir)
     }
 
     val triggerGestureDirection = { dir: GestureDirection ->
-        if (canTriggerMainGestures && dir != GestureDirection.NONE) {
+        val now = SystemClock.uptimeMillis()
+        if (canTriggerMainGestures && dir != GestureDirection.NONE && now - lastGestureTriggerTime > 400L) {
             if (addGesture == dir) {
+                lastGestureTriggerTime = now
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 activeSheetItem = null
+                editorOpenSessionCounter = now
                 isEditorSheetVisible = true
             } else if (settingsGesture == dir) {
+                lastGestureTriggerTime = now
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 isSettingsSheetVisible = true
             }
@@ -210,48 +229,25 @@ fun InventoryScreen(
     val nestedScrollConnection = remember(
         canTriggerMainGestures,
         addGesture,
-        settingsGesture
+        settingsGesture,
+        density
     ) {
         object : NestedScrollConnection {
-            private var accumulatedOverscrollY = 0f
-            private var gestureConsumedInCurrentDrag = false
-            private val thresholdPx = 115f
-
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if ((available.y > 0f && accumulatedOverscrollY < 0f) ||
-                    (available.y < 0f && accumulatedOverscrollY > 0f)
-                ) {
-                    accumulatedOverscrollY = 0f
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (!canTriggerMainGestures) return Velocity.Zero
+                val now = SystemClock.uptimeMillis()
+                if (now - lastGestureTriggerTime < 350L) {
+                    return available
                 }
-                return Offset.Zero
-            }
-
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource
-            ): Offset {
-                if (!canTriggerMainGestures || source != NestedScrollSource.UserInput || gestureConsumedInCurrentDrag) {
-                    return Offset.Zero
-                }
-                if (available.y != 0f) {
-                    accumulatedOverscrollY += available.y
-                    if (accumulatedOverscrollY <= -thresholdPx && isDirectionAssigned(GestureDirection.SWIPE_UP)) {
-                        gestureConsumedInCurrentDrag = true
-                        accumulatedOverscrollY = 0f
-                        triggerGestureDirection(GestureDirection.SWIPE_UP)
-                    } else if (accumulatedOverscrollY >= thresholdPx && isDirectionAssigned(GestureDirection.SWIPE_DOWN)) {
-                        gestureConsumedInCurrentDrag = true
-                        accumulatedOverscrollY = 0f
-                        triggerGestureDirection(GestureDirection.SWIPE_DOWN)
+                val touchDuration = now - lastTouchDownTime
+                val vyDpPerSec = available.y / density
+                if (touchDuration in 15L..165L && abs(vyDpPerSec) >= 2500f) {
+                    val dir = if (vyDpPerSec < 0f) GestureDirection.SWIPE_UP else GestureDirection.SWIPE_DOWN
+                    if (isDirectionAssigned(dir)) {
+                        triggerGestureDirection(dir)
+                        return available
                     }
                 }
-                return Offset.Zero
-            }
-
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                accumulatedOverscrollY = 0f
-                gestureConsumedInCurrentDrag = false
                 return Velocity.Zero
             }
         }
@@ -282,9 +278,59 @@ fun InventoryScreen(
         }
     }
 
-    var horizontalDragAccumulator by remember { mutableFloatStateOf(0f) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(canTriggerMainGestures, addGesture, settingsGesture, density) {
+                if (!canTriggerMainGestures) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val startX = down.position.x
+                    val startY = down.position.y
+                    val startTime = down.uptimeMillis
+                    lastTouchDownTime = startTime
+                    var firedInThisGesture = false
 
-    Box(modifier = Modifier.fillMaxSize()) {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+
+                        if (!firedInThisGesture) {
+                            val dt = (change.uptimeMillis - startTime).coerceAtLeast(1L)
+                            val dxDp = (change.position.x - startX) / density
+                            val dyDp = (change.position.y - startY) / density
+                            val absDx = abs(dxDp)
+                            val absDy = abs(dyDp)
+
+                            if (dt in 12L..135L && absDy >= 68f && absDy > absDx * 1.6f) {
+                                val vyDpPerSec = (absDy * 1000f) / dt
+                                if (vyDpPerSec >= 1450f) {
+                                    val dir = if (dyDp < 0f) GestureDirection.SWIPE_UP else GestureDirection.SWIPE_DOWN
+                                    if (isDirectionAssigned(dir)) {
+                                        firedInThisGesture = true
+                                        change.consume()
+                                        triggerGestureDirection(dir)
+                                    }
+                                }
+                            } else if (dt in 12L..240L && absDx >= 62f && absDx > absDy * 1.5f) {
+                                val vxDpPerSec = (absDx * 1000f) / dt
+                                if (vxDpPerSec >= 650f) {
+                                    val dir = if (dxDp < 0f) GestureDirection.SWIPE_LEFT else GestureDirection.SWIPE_RIGHT
+                                    if (isDirectionAssigned(dir)) {
+                                        firedInThisGesture = true
+                                        change.consume()
+                                        triggerGestureDirection(dir)
+                                    }
+                                }
+                            }
+                        } else {
+                            change.consume()
+                        }
+                    }
+                }
+            }
+    ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -302,8 +348,7 @@ fun InventoryScreen(
                     onFilterSelected = viewModel::onFilterSelected,
                     onSortFieldChange = viewModel::setSortField,
                     onSortDirectionChange = viewModel::setSortDirection,
-                    onOpenSettings = { isSettingsSheetVisible = true },
-                    onTriggerGesture = triggerGestureDirection
+                    onOpenSettings = { isSettingsSheetVisible = true }
                 )
             },
             bottomBar = {
@@ -331,6 +376,7 @@ fun InventoryScreen(
                 FloatingActionButton(
                     onClick = {
                         activeSheetItem = null
+                        editorOpenSessionCounter = SystemClock.uptimeMillis()
                         isEditorSheetVisible = true
                     },
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -353,24 +399,6 @@ fun InventoryScreen(
                     .fillMaxSize()
                     .padding(innerPadding)
                     .nestedScroll(nestedScrollConnection)
-                    .pointerInput(canTriggerMainGestures, addGesture, settingsGesture) {
-                        detectHorizontalDragGestures(
-                            onDragStart = { horizontalDragAccumulator = 0f },
-                            onDragEnd = { horizontalDragAccumulator = 0f },
-                            onDragCancel = { horizontalDragAccumulator = 0f },
-                            onHorizontalDrag = { _, dragAmount ->
-                                if (!canTriggerMainGestures) return@detectHorizontalDragGestures
-                                horizontalDragAccumulator += dragAmount
-                                if (horizontalDragAccumulator <= -95f && isDirectionAssigned(GestureDirection.SWIPE_LEFT)) {
-                                    horizontalDragAccumulator = 0f
-                                    triggerGestureDirection(GestureDirection.SWIPE_LEFT)
-                                } else if (horizontalDragAccumulator >= 95f && isDirectionAssigned(GestureDirection.SWIPE_RIGHT)) {
-                                    horizontalDragAccumulator = 0f
-                                    triggerGestureDirection(GestureDirection.SWIPE_RIGHT)
-                                }
-                            }
-                        )
-                    }
             ) {
                 if (uiState.items.isEmpty() && !uiState.isLoading) {
                     val onlyLowStockSelected = uiState.selectedFilterIds.size == 1 &&
@@ -379,58 +407,172 @@ fun InventoryScreen(
                         isLowStockFilter = onlyLowStockSelected,
                         hasSearchQuery = uiState.searchQuery.isNotBlank(),
                         addItemGesture = addGesture,
-                        onTriggerGesture = triggerGestureDirection,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = 14.dp,
-                            end = 14.dp,
-                            top = 8.dp,
-                            bottom = 104.dp
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (uiState.settings.groupByCategory) {
-                            groupedCategories.forEach { (categoryName, categoryItems) ->
-                                item(
-                                    key = "category_header_$categoryName",
-                                    contentType = "category_header"
-                                ) {
-                                    CategoryGroupHeader(
-                                        categoryName = categoryName,
-                                        itemCount = categoryItems.size
-                                    )
-                                }
-                                items(
-                                    items = categoryItems,
-                                    key = { it.id },
-                                    contentType = { "inventory_item" }
-                                ) { item ->
-                                    InventoryItemRow(
-                                        item = item,
-                                        onIncrement = onIncrementItem,
-                                        onDecrement = onDecrementItem,
-                                        onToggleOpened = onToggleOpenedItem,
-                                        onEditRequest = onEditItem
-                                    )
+                    when (layoutMode) {
+                        ItemLayoutMode.GRID_CARDS -> {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(2),
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 12.dp,
+                                    end = 12.dp,
+                                    top = 8.dp,
+                                    bottom = 104.dp
+                                ),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                if (uiState.settings.groupByCategory) {
+                                    groupedCategories.forEach { (categoryName, categoryItems) ->
+                                        item(
+                                            key = "grid_category_header_$categoryName",
+                                            span = { GridItemSpan(maxLineSpan) },
+                                            contentType = "category_header"
+                                        ) {
+                                            CategoryGroupHeader(
+                                                categoryName = categoryName,
+                                                itemCount = categoryItems.size
+                                            )
+                                        }
+                                        items(
+                                            items = categoryItems,
+                                            key = { it.id },
+                                            contentType = { "inventory_grid_item" }
+                                        ) { item ->
+                                            InventoryGridCard(
+                                                item = item,
+                                                onIncrement = onIncrementItem,
+                                                onDecrement = onDecrementItem,
+                                                onToggleOpened = onToggleOpenedItem,
+                                                onEditRequest = onEditItem
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    items(
+                                        items = uiState.items,
+                                        key = { it.id },
+                                        contentType = { "inventory_grid_item" }
+                                    ) { item ->
+                                        InventoryGridCard(
+                                            item = item,
+                                            onIncrement = onIncrementItem,
+                                            onDecrement = onDecrementItem,
+                                            onToggleOpened = onToggleOpenedItem,
+                                            onEditRequest = onEditItem
+                                        )
+                                    }
                                 }
                             }
-                        } else {
-                            items(
-                                items = uiState.items,
-                                key = { it.id },
-                                contentType = { "inventory_item" }
-                            ) { item ->
-                                InventoryItemRow(
-                                    item = item,
-                                    onIncrement = onIncrementItem,
-                                    onDecrement = onDecrementItem,
-                                    onToggleOpened = onToggleOpenedItem,
-                                    onEditRequest = onEditItem
-                                )
+                        }
+
+                        ItemLayoutMode.COMPACT -> {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 14.dp,
+                                    end = 14.dp,
+                                    top = 8.dp,
+                                    bottom = 104.dp
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (uiState.settings.groupByCategory) {
+                                    groupedCategories.forEach { (categoryName, categoryItems) ->
+                                        item(
+                                            key = "compact_category_header_$categoryName",
+                                            contentType = "category_header"
+                                        ) {
+                                            CategoryGroupHeader(
+                                                categoryName = categoryName,
+                                                itemCount = categoryItems.size
+                                            )
+                                        }
+                                        items(
+                                            items = categoryItems,
+                                            key = { it.id },
+                                            contentType = { "inventory_compact_item" }
+                                        ) { item ->
+                                            InventoryCompactRow(
+                                                item = item,
+                                                onIncrement = onIncrementItem,
+                                                onDecrement = onDecrementItem,
+                                                onToggleOpened = onToggleOpenedItem,
+                                                onEditRequest = onEditItem
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    items(
+                                        items = uiState.items,
+                                        key = { it.id },
+                                        contentType = { "inventory_compact_item" }
+                                    ) { item ->
+                                        InventoryCompactRow(
+                                            item = item,
+                                            onIncrement = onIncrementItem,
+                                            onDecrement = onDecrementItem,
+                                            onToggleOpened = onToggleOpenedItem,
+                                            onEditRequest = onEditItem
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        ItemLayoutMode.LIST -> {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 14.dp,
+                                    end = 14.dp,
+                                    top = 8.dp,
+                                    bottom = 104.dp
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                if (uiState.settings.groupByCategory) {
+                                    groupedCategories.forEach { (categoryName, categoryItems) ->
+                                        item(
+                                            key = "category_header_$categoryName",
+                                            contentType = "category_header"
+                                        ) {
+                                            CategoryGroupHeader(
+                                                categoryName = categoryName,
+                                                itemCount = categoryItems.size
+                                            )
+                                        }
+                                        items(
+                                            items = categoryItems,
+                                            key = { it.id },
+                                            contentType = { "inventory_item" }
+                                        ) { item ->
+                                            InventoryItemRow(
+                                                item = item,
+                                                onIncrement = onIncrementItem,
+                                                onDecrement = onDecrementItem,
+                                                onToggleOpened = onToggleOpenedItem,
+                                                onEditRequest = onEditItem
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    items(
+                                        items = uiState.items,
+                                        key = { it.id },
+                                        contentType = { "inventory_item" }
+                                    ) { item ->
+                                        InventoryItemRow(
+                                            item = item,
+                                            onIncrement = onIncrementItem,
+                                            onDecrement = onDecrementItem,
+                                            onToggleOpened = onToggleOpenedItem,
+                                            onEditRequest = onEditItem
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -469,8 +611,7 @@ fun InventoryScreen(
 
                 if (placement == FilterPlacement.RIGHT_EDGE) {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize(),
+                        modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.CenterEnd
                     ) {
                         CollapsibleEdgeSidebar(
@@ -497,6 +638,7 @@ fun InventoryScreen(
         ) {
             ItemEditorSheetContent(
                 initialItem = activeSheetItem,
+                sessionSeed = editorOpenSessionCounter,
                 allItems = uiState.allItems,
                 productCategories = uiState.productCategories,
                 settings = uiState.settings,
@@ -543,6 +685,7 @@ fun InventoryScreen(
                 onColorPaletteChange = viewModel::setColorPalette,
                 onFilterPlacementChange = viewModel::setFilterPlacement,
                 onAnimationSpeedChange = viewModel::setAnimationSpeed,
+                onItemLayoutModeChange = viewModel::setItemLayoutMode,
                 onAddItemGestureChange = viewModel::setAddItemGesture,
                 onOpenSettingsGestureChange = viewModel::setOpenSettingsGesture,
                 onGroupByCategoryChange = viewModel::setGroupByCategory,
@@ -792,14 +935,11 @@ private fun InventoryTopBar(
     onFilterSelected: (String) -> Unit,
     onSortFieldChange: (SortField) -> Unit,
     onSortDirectionChange: (SortDirection) -> Unit,
-    onOpenSettings: () -> Unit,
-    onTriggerGesture: (GestureDirection) -> Unit
+    onOpenSettings: () -> Unit
 ) {
     var isSortMenuExpanded by remember { mutableStateOf(false) }
     var isFilterDropdownExpanded by remember { mutableStateOf(false) }
     var isCollapsibleOpen by rememberSaveable { mutableStateOf(false) }
-    var verticalDragAcc by remember { mutableFloatStateOf(0f) }
-    var horizontalDragAcc by remember { mutableFloatStateOf(0f) }
 
     val selectedFilters = remember(filters, selectedFilterIds) {
         filters.filter { it.id in selectedFilterIds }
@@ -815,42 +955,7 @@ private fun InventoryTopBar(
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        modifier = Modifier
-            .pointerInput(onTriggerGesture) {
-                detectVerticalDragGestures(
-                    onDragStart = { verticalDragAcc = 0f },
-                    onDragEnd = { verticalDragAcc = 0f },
-                    onDragCancel = { verticalDragAcc = 0f },
-                    onVerticalDrag = { _, dragAmount ->
-                        verticalDragAcc += dragAmount
-                        if (verticalDragAcc <= -90f) {
-                            verticalDragAcc = 0f
-                            onTriggerGesture(GestureDirection.SWIPE_UP)
-                        } else if (verticalDragAcc >= 90f) {
-                            verticalDragAcc = 0f
-                            onTriggerGesture(GestureDirection.SWIPE_DOWN)
-                        }
-                    }
-                )
-            }
-            .pointerInput(onTriggerGesture) {
-                detectHorizontalDragGestures(
-                    onDragStart = { horizontalDragAcc = 0f },
-                    onDragEnd = { horizontalDragAcc = 0f },
-                    onDragCancel = { horizontalDragAcc = 0f },
-                    onHorizontalDrag = { _, dragAmount ->
-                        horizontalDragAcc += dragAmount
-                        if (horizontalDragAcc <= -90f) {
-                            horizontalDragAcc = 0f
-                            onTriggerGesture(GestureDirection.SWIPE_LEFT)
-                        } else if (horizontalDragAcc >= 90f) {
-                            horizontalDragAcc = 0f
-                            onTriggerGesture(GestureDirection.SWIPE_RIGHT)
-                        }
-                    }
-                )
-            }
+        tonalElevation = 2.dp
     ) {
         Column(
             modifier = Modifier
@@ -988,11 +1093,20 @@ private fun InventoryTopBar(
                         SortField.entries.forEach { field ->
                             SortDirection.entries.forEach { direction ->
                                 val isCurrent = sortField == field && sortDirection == direction
-                                val arrow = if (direction == SortDirection.ASC) "↑" else "↓"
+                                val optionLabel = if (field == SortField.OPENED) {
+                                    if (direction == SortDirection.ASC) {
+                                        "Bontott termékek elöl"
+                                    } else {
+                                        "Bontatlan termékek elöl"
+                                    }
+                                } else {
+                                    val arrow = if (direction == SortDirection.ASC) "↑" else "↓"
+                                    "${field.label} (${direction.label} $arrow)"
+                                }
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = "${field.label} (${direction.label} $arrow)",
+                                            text = optionLabel,
                                             fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
                                         )
                                     },
@@ -1683,31 +1797,386 @@ private fun InventoryItemRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun InventoryGridCard(
+    item: InventoryItem,
+    onIncrement: (InventoryItem) -> Unit,
+    onDecrement: (InventoryItem) -> Unit,
+    onToggleOpened: (InventoryItem) -> Unit,
+    onEditRequest: (InventoryItem) -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val isOutOfStock = item.isOutOfStock
+    val isLowStock = item.isLowStock
+
+    val containerColor = when {
+        isOutOfStock -> MaterialTheme.colorScheme.surfaceContainerLowest
+        isLowStock -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.28f)
+        else -> MaterialTheme.colorScheme.surfaceContainerLow
+    }
+
+    val borderColor = when {
+        isOutOfStock -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        isLowStock -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+        else -> Color.Transparent
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .combinedClickable(
+                onClick = { onEditRequest(item) },
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onEditRequest(item)
+                }
+            ),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = item.name,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    textDecoration = if (isOutOfStock) TextDecoration.LineThrough else TextDecoration.None
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
+            )
+
+            Text(
+                text = "${item.category} • ${item.unit}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
+            )
+
+            Row(
+                modifier = Modifier.height(22.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                OpenedStatusBadge(
+                    isOpened = item.isOpened,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onToggleOpened(item)
+                    }
+                )
+
+                if (isOutOfStock) {
+                    StatusBadge(
+                        text = "Elfogyott",
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                } else if (isLowStock) {
+                    StatusBadge(
+                        text = "Kifogyóban",
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+
+            if (item.note.isNotBlank()) {
+                Text(
+                    text = item.note,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontStyle = FontStyle.Italic,
+                        fontSize = 11.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                FilledTonalIconButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onDecrement(item)
+                    },
+                    enabled = item.quantity > 0.0,
+                    shape = CircleShape,
+                    modifier = Modifier.size(36.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                ) {
+                    Icon(
+                        imageVector = AppIcons.Remove,
+                        contentDescription = "Csökkentés",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                Text(
+                    text = item.formattedQuantity,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    ),
+                    color = when {
+                        isOutOfStock -> MaterialTheme.colorScheme.error
+                        isLowStock -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
+                    textAlign = TextAlign.Center
+                )
+
+                FilledIconButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onIncrement(item)
+                    },
+                    shape = CircleShape,
+                    modifier = Modifier.size(36.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Növelés",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun InventoryCompactRow(
+    item: InventoryItem,
+    onIncrement: (InventoryItem) -> Unit,
+    onDecrement: (InventoryItem) -> Unit,
+    onToggleOpened: (InventoryItem) -> Unit,
+    onEditRequest: (InventoryItem) -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val isOutOfStock = item.isOutOfStock
+    val isLowStock = item.isLowStock
+
+    val containerColor = when {
+        isOutOfStock -> MaterialTheme.colorScheme.surfaceContainerLowest
+        isLowStock -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.28f)
+        else -> MaterialTheme.colorScheme.surfaceContainerLow
+    }
+
+    val borderColor = when {
+        isOutOfStock -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        isLowStock -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+        else -> Color.Transparent
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .combinedClickable(
+                onClick = { onEditRequest(item) },
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onEditRequest(item)
+                }
+            ),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            textDecoration = if (isOutOfStock) TextDecoration.LineThrough else TextDecoration.None
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .alpha(if (isOutOfStock) 0.58f else 1f)
+                    )
+                    Text(
+                        text = "(${item.category})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.height(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OpenedStatusBadge(
+                        isOpened = item.isOpened,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onToggleOpened(item)
+                        }
+                    )
+
+                    if (isOutOfStock) {
+                        StatusBadge(
+                            text = "Elfogyott",
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    } else if (isLowStock) {
+                        StatusBadge(
+                            text = "Kifogyóban",
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                FilledTonalIconButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onDecrement(item)
+                    },
+                    enabled = item.quantity > 0.0,
+                    shape = CircleShape,
+                    modifier = Modifier.size(34.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                ) {
+                    Icon(
+                        imageVector = AppIcons.Remove,
+                        contentDescription = "Csökkentés",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                Text(
+                    text = "${item.formattedQuantity} ${item.unit}",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    color = when {
+                        isOutOfStock -> MaterialTheme.colorScheme.error
+                        isLowStock -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.width(64.dp),
+                    maxLines = 1
+                )
+
+                FilledIconButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onIncrement(item)
+                    },
+                    shape = CircleShape,
+                    modifier = Modifier.size(34.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Növelés",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun OpenedStatusBadge(
     isOpened: Boolean,
     onClick: () -> Unit
 ) {
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+
     val bgColor = if (isOpened) {
         MaterialTheme.colorScheme.primaryContainer
     } else {
-        MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f)
+        if (isDark) {
+            Color(0xFFD48B4B).copy(alpha = 0.22f)
+        } else {
+            Color(0xFFE6A467).copy(alpha = 0.26f)
+        }
     }
+
     val txtColor = if (isOpened) {
         MaterialTheme.colorScheme.onPrimaryContainer
     } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+        if (isDark) {
+            Color(0xFFF2B67F)
+        } else {
+            Color(0xFF7A4414)
+        }
+    }
+
+    val borderStroke = if (isOpened) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+    } else {
+        BorderStroke(
+            1.dp,
+            if (isDark) Color(0xFFD48B4B).copy(alpha = 0.55f) else Color(0xFFB87030).copy(alpha = 0.45f)
+        )
     }
 
     Surface(
         color = bgColor,
         contentColor = txtColor,
         shape = RoundedCornerShape(6.dp),
-        border = if (isOpened) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
-        } else {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-        },
+        border = borderStroke,
         modifier = Modifier
             .height(20.dp)
             .clip(RoundedCornerShape(6.dp))
@@ -1718,7 +2187,7 @@ private fun OpenedStatusBadge(
             modifier = Modifier.padding(horizontal = 7.dp)
         ) {
             Text(
-                text = if (isOpened) "Bontott ✓" else "Bontatlan",
+                text = if (isOpened) "Bontott" else "Bontatlan",
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = if (isOpened) FontWeight.Bold else FontWeight.Medium
                 ),
@@ -1760,31 +2229,10 @@ private fun EmptyInventoryState(
     isLowStockFilter: Boolean,
     hasSearchQuery: Boolean,
     addItemGesture: GestureDirection,
-    onTriggerGesture: (GestureDirection) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var verticalDragAcc by remember { mutableFloatStateOf(0f) }
-
     Box(
-        modifier = modifier
-            .pointerInput(onTriggerGesture) {
-                detectVerticalDragGestures(
-                    onDragStart = { verticalDragAcc = 0f },
-                    onDragEnd = { verticalDragAcc = 0f },
-                    onDragCancel = { verticalDragAcc = 0f },
-                    onVerticalDrag = { _, dragAmount ->
-                        verticalDragAcc += dragAmount
-                        if (verticalDragAcc <= -90f) {
-                            verticalDragAcc = 0f
-                            onTriggerGesture(GestureDirection.SWIPE_UP)
-                        } else if (verticalDragAcc >= 90f) {
-                            verticalDragAcc = 0f
-                            onTriggerGesture(GestureDirection.SWIPE_DOWN)
-                        }
-                    }
-                )
-            }
-            .padding(32.dp),
+        modifier = modifier.padding(32.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -1813,7 +2261,7 @@ private fun EmptyInventoryState(
             )
             if (addItemGesture != GestureDirection.NONE) {
                 Text(
-                    text = "Tipp: húzd a képernyőt (${addItemGesture.label}) új termék gyors felvételéhez!",
+                    text = "Tipp: rántsd meg gyorsan a képernyőt (${addItemGesture.label}) új termék felvételéhez!",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
@@ -1826,6 +2274,7 @@ private fun EmptyInventoryState(
 @Composable
 private fun ItemEditorSheetContent(
     initialItem: InventoryItem?,
+    sessionSeed: Long,
     allItems: List<InventoryItem>,
     productCategories: List<FilterItem>,
     settings: AppSettings,
@@ -1843,30 +2292,37 @@ private fun ItemEditorSheetContent(
     ) -> Unit,
     onDelete: (String) -> Unit
 ) {
-    val defaultCategoryLabel = productCategories.firstOrNull()?.label ?: "Hűtő"
+    val selectableCategories = remember(productCategories) {
+        productCategories.filterNot {
+            it.label.equals("Bontatlan", ignoreCase = true) ||
+                it.label.equals("Bontott", ignoreCase = true)
+        }
+    }
+    val defaultCategoryLabel = selectableCategories.firstOrNull()?.label ?: "Hűtő"
 
-    var name by rememberSaveable(initialItem?.id) {
+    var name by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableStateOf(initialItem?.name ?: "")
     }
-    var selectedCategory by rememberSaveable(initialItem?.id) {
+    var selectedCategory by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableStateOf(initialItem?.category ?: defaultCategoryLabel)
     }
-    var selectedUnit by rememberSaveable(initialItem?.id) {
-        mutableStateOf(initialItem?.unit ?: InventoryUnits.DB)
+    var selectedUnit by rememberSaveable(initialItem?.id, sessionSeed) {
+        val initUnit = initialItem?.unit ?: InventoryUnits.DB
+        mutableStateOf(if (initUnit in InventoryUnits.all) initUnit else InventoryUnits.DB)
     }
-    var stepSize by rememberSaveable(initialItem?.id) {
+    var stepSize by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableDoubleStateOf(settings.effectiveStepForUnit(initialItem?.unit ?: InventoryUnits.DB))
     }
-    var quantity by rememberSaveable(initialItem?.id) {
+    var quantity by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableDoubleStateOf(initialItem?.quantity ?: settings.effectiveStepForUnit(InventoryUnits.DB))
     }
-    var minQuantity by rememberSaveable(initialItem?.id) {
+    var minQuantity by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableDoubleStateOf(initialItem?.minQuantity ?: settings.defaultMinQuantity)
     }
-    var isOpened by rememberSaveable(initialItem?.id) {
+    var isOpened by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableStateOf(initialItem?.isOpened ?: false)
     }
-    var note by rememberSaveable(initialItem?.id) {
+    var note by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableStateOf(initialItem?.note ?: "")
     }
 
@@ -1887,26 +2343,33 @@ private fun ItemEditorSheetContent(
         }
     }
 
-    val quickSuggestions = remember(normalizedTypedName, allItems, initialItem?.id) {
+    val randomizedPool = remember(sessionSeed, initialItem?.id, allItems.size) {
+        val combined = buildList {
+            allItems.forEach { existing ->
+                val validUnit = if (existing.unit in InventoryUnits.all) existing.unit else InventoryUnits.DB
+                add(QuickSuggestion(existing.name, existing.category, validUnit))
+            }
+            addAll(CommonHouseholdSuggestions.presets)
+        }.distinctBy { it.name.trim().lowercase() }
+        combined.shuffled()
+    }
+
+    val quickSuggestions = remember(normalizedTypedName, randomizedPool, allItems, initialItem?.id) {
         if (initialItem != null) {
             emptyList()
-        } else {
-            val combined = buildList {
-                allItems.forEach { existing ->
-                    add(QuickSuggestion(existing.name, existing.category, existing.unit))
-                }
-                addAll(CommonHouseholdSuggestions.presets)
-            }.distinctBy { it.name.trim().lowercase() }
-
-            if (normalizedTypedName.isBlank()) {
-                val existingKeys = allItems.map { it.exactMatchKey }.toSet()
-                combined.filter { it.name.trim().lowercase() !in existingKeys }.take(8)
+        } else if (normalizedTypedName.isBlank()) {
+            val existingKeys = allItems.map { it.exactMatchKey }.toSet()
+            val notYetInStock = randomizedPool.filter { it.name.trim().lowercase() !in existingKeys }
+            if (notYetInStock.size >= 6) {
+                notYetInStock.take(6)
             } else {
-                combined.filter { suggestion ->
-                    val key = suggestion.name.trim().lowercase()
-                    key != normalizedTypedName && key.contains(normalizedTypedName)
-                }.take(8)
+                randomizedPool.take(6)
             }
+        } else {
+            randomizedPool.filter { suggestion ->
+                val key = suggestion.name.trim().lowercase()
+                key != normalizedTypedName && key.contains(normalizedTypedName)
+            }.take(6)
         }
     }
 
@@ -2056,7 +2519,7 @@ private fun ItemEditorSheetContent(
                             selected = false,
                             onClick = {
                                 name = suggestion.name
-                                val matchingCat = productCategories.firstOrNull {
+                                val matchingCat = selectableCategories.firstOrNull {
                                     it.label.equals(suggestion.category, ignoreCase = true)
                                 }
                                 if (matchingCat != null) {
@@ -2109,7 +2572,7 @@ private fun ItemEditorSheetContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             CompactChipFlowRow {
-                productCategories.forEach { category ->
+                selectableCategories.forEach { category ->
                     CompactFilterChip(
                         selected = selectedCategory.equals(category.label, ignoreCase = true),
                         onClick = { selectedCategory = category.label },
@@ -2280,6 +2743,7 @@ private fun SettingsSheetContent(
     onColorPaletteChange: (AppColorPalette) -> Unit,
     onFilterPlacementChange: (FilterPlacement) -> Unit,
     onAnimationSpeedChange: (AnimationSpeed) -> Unit,
+    onItemLayoutModeChange: (ItemLayoutMode) -> Unit,
     onAddItemGestureChange: (GestureDirection) -> Unit,
     onOpenSettingsGestureChange: (GestureDirection) -> Unit,
     onGroupByCategoryChange: (Boolean) -> Unit,
@@ -2456,9 +2920,25 @@ private fun SettingsSheetContent(
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                text = "Gesztusok és nézet",
+                text = "Nézet és gyorsgesztusok",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Felsorolás formátuma",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                )
+                CompactChipFlowRow {
+                    ItemLayoutMode.entries.forEach { mode ->
+                        CompactFilterChip(
+                            selected = settings.itemLayoutMode == mode,
+                            onClick = { onItemLayoutModeChange(mode) },
+                            label = mode.label
+                        )
+                    }
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2484,11 +2964,11 @@ private fun SettingsSheetContent(
 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "Új termék felvétele gesztussal",
+                    text = "Új termék felvétele gyors húzással",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
                 Text(
-                    text = "Válaszd ki, merre húzva a főképernyőt nyíljon meg az új termék felvétele:",
+                    text = "Bárhol a főképernyőn egy gyors, határozott rántással megnyithatod (normál görgetésnél nem aktiválódik):",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2505,11 +2985,11 @@ private fun SettingsSheetContent(
 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "Beállítások megnyitása gesztussal",
+                    text = "Beállítások megnyitása gyors húzással",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
                 Text(
-                    text = "Válaszd ki, merre húzva a főképernyőt nyíljanak meg a beállítások:",
+                    text = "Bárhol a főképernyőn egy gyors, határozott rántással megnyithatod a beállításokat:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

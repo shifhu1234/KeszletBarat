@@ -28,7 +28,15 @@ enum class AppColorPalette(val label: String, val previewHex: Long) {
     INDIGO("Indigó", 0xFF4355B9),
     FOREST("Erdő", 0xFF2E6C00),
     COFFEE("Kávé", 0xFF705845),
-    GRAPHITE("Grafit", 0xFF45474A)
+    GRAPHITE("Grafit", 0xFF45474A),
+    CRIMSON("Bíbor", 0xFFB3261E),
+    CORAL("Korall", 0xFFB84327),
+    MINT("Menta", 0xFF006B58),
+    SKY("Égszínkék", 0xFF006493),
+    PLUM("Szilva", 0xFF7B2D7E),
+    OLIVE("Olíva", 0xFF556500),
+    CHOCOLATE("Csokoládé", 0xFF834C24),
+    SLATE("Palaszürke", 0xFF3E5F73)
 }
 
 enum class FilterPlacement(val label: String) {
@@ -43,7 +51,6 @@ enum class FilterPlacement(val label: String) {
 
 enum class AnimationSpeed(val label: String, val durationMillis: Int) {
     NORMAL("Normál", 230),
-    SNAPPY("Villámgyors", 110),
     BOUNCY("Rugós", 280),
     ZOOM("Nagyító", 220),
     FLOAT("Lebegő", 360),
@@ -58,12 +65,19 @@ enum class GestureDirection(val label: String) {
     SWIPE_RIGHT("Jobbra →")
 }
 
+enum class ItemLayoutMode(val label: String) {
+    LIST("Listás"),
+    GRID_CARDS("Kártyás (2 oszlop)"),
+    COMPACT("Kompakt lista")
+}
+
 @Immutable
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val colorPalette: AppColorPalette = AppColorPalette.DYNAMIC,
     val filterPlacement: FilterPlacement = FilterPlacement.TOP_BAR,
     val animationSpeed: AnimationSpeed = AnimationSpeed.BOUNCY,
+    val itemLayoutMode: ItemLayoutMode = ItemLayoutMode.LIST,
     val addItemGesture: GestureDirection = GestureDirection.SWIPE_UP,
     val openSettingsGesture: GestureDirection = GestureDirection.SWIPE_DOWN,
     val groupByCategory: Boolean = false,
@@ -111,6 +125,11 @@ class SettingsRepository(context: Context) {
     fun setAnimationSpeed(speed: AnimationSpeed) {
         prefs.edit().putString(KEY_ANIMATION_SPEED, speed.name).apply()
         _settings.value = _settings.value.copy(animationSpeed = speed)
+    }
+
+    fun setItemLayoutMode(mode: ItemLayoutMode) {
+        prefs.edit().putString(KEY_ITEM_LAYOUT_MODE, mode.name).apply()
+        _settings.value = _settings.value.copy(itemLayoutMode = mode)
     }
 
     fun setAddItemGesture(direction: GestureDirection) {
@@ -192,6 +211,9 @@ class SettingsRepository(context: Context) {
         val animName = prefs.getString(KEY_ANIMATION_SPEED, AnimationSpeed.BOUNCY.name) ?: AnimationSpeed.BOUNCY.name
         val animationSpeed = runCatching { AnimationSpeed.valueOf(animName) }.getOrDefault(AnimationSpeed.BOUNCY)
 
+        val layoutName = prefs.getString(KEY_ITEM_LAYOUT_MODE, ItemLayoutMode.LIST.name) ?: ItemLayoutMode.LIST.name
+        val itemLayoutMode = runCatching { ItemLayoutMode.valueOf(layoutName) }.getOrDefault(ItemLayoutMode.LIST)
+
         val addGestureName = prefs.getString(KEY_ADD_ITEM_GESTURE, GestureDirection.SWIPE_UP.name) ?: GestureDirection.SWIPE_UP.name
         val addItemGesture = runCatching { GestureDirection.valueOf(addGestureName) }.getOrDefault(GestureDirection.SWIPE_UP)
 
@@ -223,6 +245,7 @@ class SettingsRepository(context: Context) {
             colorPalette = colorPalette,
             filterPlacement = filterPlacement,
             animationSpeed = animationSpeed,
+            itemLayoutMode = itemLayoutMode,
             addItemGesture = addItemGesture,
             openSettingsGesture = openSettingsGesture,
             groupByCategory = groupByCategory,
@@ -240,6 +263,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_COLOR_PALETTE = "color_palette"
         private const val KEY_FILTER_PLACEMENT = "filter_placement"
         private const val KEY_ANIMATION_SPEED = "animation_speed"
+        private const val KEY_ITEM_LAYOUT_MODE = "item_layout_mode"
         private const val KEY_ADD_ITEM_GESTURE = "add_item_gesture"
         private const val KEY_OPEN_SETTINGS_GESTURE = "open_settings_gesture"
         private const val KEY_GROUP_BY_CATEGORY = "group_by_category"
