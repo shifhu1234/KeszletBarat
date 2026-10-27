@@ -18,10 +18,12 @@ import hu.keszletbarat.app.model.SortDirection
 import hu.keszletbarat.app.model.SortField
 import hu.keszletbarat.app.model.cleanQuantity
 import hu.keszletbarat.app.model.normalizeForSearch
+import hu.keszletbarat.app.widget.KeszletWidgetManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
@@ -32,6 +34,7 @@ import java.util.UUID
 @Immutable
 data class InventoryUiState(
     val items: List<InventoryItem> = emptyList(),
+    val allItems: List<InventoryItem> = emptyList(),
     val filters: List<FilterItem> = FilterItem.defaultFilters,
     val productCategories: List<FilterItem> = FilterItem.defaultFilters.filter { it.isProductCategory },
     val selectedFilterId: String = FilterItem.ID_ALL,
@@ -63,6 +66,9 @@ class InventoryViewModel(
     private val _optimisticFilters = MutableStateFlow<Pair<Long, List<FilterItem>>?>(null)
     private val _writeError = MutableStateFlow<String?>(null)
     private val _latestAllItems = MutableStateFlow<List<InventoryItem>>(emptyList())
+
+    private val _pendingWidgetAction = MutableStateFlow<String?>(null)
+    val pendingWidgetAction: StateFlow<String?> = _pendingWidgetAction.asStateFlow()
 
     private val mergedStateFlow = combine(
         repository.observeItems(),
@@ -104,6 +110,7 @@ class InventoryViewModel(
 
         val allItemsList = itemMap.values.toList()
         _latestAllItems.value = allItemsList
+        KeszletWidgetManager.syncWidgets(getApplication(), allItemsList)
 
         MergedDataState(
             allItems = allItemsList,
@@ -149,6 +156,7 @@ class InventoryViewModel(
 
         InventoryUiState(
             items = sorted,
+            allItems = allItems,
             filters = filters,
             productCategories = filters.filter { it.isProductCategory },
             selectedFilterId = activeFilter.id,
@@ -198,6 +206,25 @@ class InventoryViewModel(
         return items.sortedWith(finalComparator)
     }
 
+    fun handleWidgetAction(action: String?) {
+        if (action.isNullOrBlank()) return
+        when (action) {
+            KeszletWidgetManager.ACTION_OPEN_ALL -> {
+                _selectedFilterId.value = FilterItem.ID_ALL
+            }
+            KeszletWidgetManager.ACTION_OPEN_LOW_STOCK -> {
+                _selectedFilterId.value = FilterItem.ID_LOW_STOCK
+            }
+            KeszletWidgetManager.ACTION_OPEN_ADD_ITEM -> {
+                _pendingWidgetAction.value = action
+            }
+        }
+    }
+
+    fun consumeWidgetAction() {
+        _pendingWidgetAction.value = null
+    }
+
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query
     }
@@ -217,6 +244,23 @@ class InventoryViewModel(
         val step = settingsRepository.settings.value.effectiveStepForUnit(item.unit)
         val newQuantity = (item.quantity - step).coerceAtLeast(0.0).cleanQuantity()
         updateItemQuantity(item, newQuantity)
+    }
+
+    fun toggleItemOpened(item: InventoryItem) {
+        val newOpenedState = !item.isOpened
+        val updated = item.copy(
+            isOpened = newOpenedState,
+            updatedAt = System.currentTimeMillis()
+        )
+        _optimisticOverrides.update { current -> current + (item.id to updated) }
+        viewModelScope.launch {
+            runCatching {
+                repository.updateOpenedState(item.id, newOpenedState)
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
+            }
+        }
     }
 
     private fun updateItemQuantity(item: InventoryItem, newQuantity: Double) {
@@ -242,7 +286,9 @@ class InventoryViewModel(
         category: String,
         quantity: Double,
         unit: String,
-        minQuantity: Double
+        minQuantity: Double,
+        isOpened: Boolean,
+        note: String
     ) {
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) return
@@ -255,6 +301,8 @@ class InventoryViewModel(
             quantity = quantity.coerceAtLeast(0.0).cleanQuantity(),
             unit = unit,
             minQuantity = minQuantity.coerceAtLeast(0.0).cleanQuantity(),
+            isOpened = isOpened,
+            note = note.trim(),
             updatedAt = System.currentTimeMillis()
         )
 
@@ -426,6 +474,18 @@ class InventoryViewModel(
 
     fun setAnimationSpeed(speed: AnimationSpeed) {
         settingsRepository.setAnimationSpeed(speed)
+    }
+
+    fun setSwipeUpToAddItem(enabled: Boolean) {
+        settingsRepository.setSwipeUpToAddItem(enabled)
+    }
+
+    fun setSwipeDownToOpenSettings(enabled: Boolean) {
+        settingsRepository.setSwipeDownToOpenSettings(enabled)
+    }
+
+    fun setGroupByCategory(enabled: Boolean) {
+        settingsRepository.setGroupByCategory(enabled)
     }
 
     fun setDefaultMinQuantity(value: Double) {

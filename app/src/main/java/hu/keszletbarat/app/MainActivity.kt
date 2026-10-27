@@ -1,5 +1,6 @@
 package hu.keszletbarat.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -10,6 +11,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import hu.keszletbarat.app.ui.InventoryScreen
 import hu.keszletbarat.app.ui.InventoryViewModel
 import hu.keszletbarat.app.ui.KeszletBaratTheme
+import hu.keszletbarat.app.widget.KeszletWidgetManager
 
 class MainActivity : ComponentActivity() {
 
@@ -18,6 +20,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        processWidgetIntent(intent)
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
             KeszletBaratTheme(
@@ -26,6 +29,20 @@ class MainActivity : ComponentActivity() {
             ) {
                 InventoryScreen(viewModel = viewModel)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        processWidgetIntent(intent)
+    }
+
+    private fun processWidgetIntent(intent: Intent?) {
+        val action = intent?.getStringExtra(KeszletWidgetManager.EXTRA_WIDGET_ACTION)
+        if (!action.isNullOrBlank()) {
+            viewModel.handleWidgetAction(action)
+            intent.removeExtra(KeszletWidgetManager.EXTRA_WIDGET_ACTION)
         }
     }
 }

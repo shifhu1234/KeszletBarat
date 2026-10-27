@@ -42,7 +42,7 @@ enum class FilterPlacement(val label: String) {
 
 enum class AnimationSpeed(val label: String, val durationMillis: Int) {
     NORMAL("Normál", 220),
-    FAST("Gyors", 80),
+    BOUNCY("Rugós", 260),
     NONE("Kikapcsolva", 0)
 }
 
@@ -51,7 +51,10 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val colorPalette: AppColorPalette = AppColorPalette.DYNAMIC,
     val filterPlacement: FilterPlacement = FilterPlacement.TOP_BAR,
-    val animationSpeed: AnimationSpeed = AnimationSpeed.FAST,
+    val animationSpeed: AnimationSpeed = AnimationSpeed.BOUNCY,
+    val swipeUpToAddItem: Boolean = true,
+    val swipeDownToOpenSettings: Boolean = true,
+    val groupByCategory: Boolean = false,
     val defaultMinQuantity: Double = 1.0,
     val quantityStep: Double = 1.0,
     val fractionalOnlyForWeightAndVolume: Boolean = false,
@@ -98,6 +101,21 @@ class SettingsRepository(context: Context) {
         _settings.value = _settings.value.copy(animationSpeed = speed)
     }
 
+    fun setSwipeUpToAddItem(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SWIPE_UP_ADD, enabled).apply()
+        _settings.value = _settings.value.copy(swipeUpToAddItem = enabled)
+    }
+
+    fun setSwipeDownToOpenSettings(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SWIPE_DOWN_SETTINGS, enabled).apply()
+        _settings.value = _settings.value.copy(swipeDownToOpenSettings = enabled)
+    }
+
+    fun setGroupByCategory(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_GROUP_BY_CATEGORY, enabled).apply()
+        _settings.value = _settings.value.copy(groupByCategory = enabled)
+    }
+
     fun setDefaultMinQuantity(value: Double) {
         val safeValue = value.coerceAtLeast(0.0).cleanQuantity()
         prefs.edit().putString(KEY_DEFAULT_MIN_QUANTITY, safeValue.toString()).apply()
@@ -135,8 +153,12 @@ class SettingsRepository(context: Context) {
         val placementName = prefs.getString(KEY_FILTER_PLACEMENT, FilterPlacement.TOP_BAR.name) ?: FilterPlacement.TOP_BAR.name
         val filterPlacement = runCatching { FilterPlacement.valueOf(placementName) }.getOrDefault(FilterPlacement.TOP_BAR)
 
-        val animName = prefs.getString(KEY_ANIMATION_SPEED, AnimationSpeed.FAST.name) ?: AnimationSpeed.FAST.name
-        val animationSpeed = runCatching { AnimationSpeed.valueOf(animName) }.getOrDefault(AnimationSpeed.FAST)
+        val animName = prefs.getString(KEY_ANIMATION_SPEED, AnimationSpeed.BOUNCY.name) ?: AnimationSpeed.BOUNCY.name
+        val animationSpeed = runCatching { AnimationSpeed.valueOf(animName) }.getOrDefault(AnimationSpeed.BOUNCY)
+
+        val swipeUpAdd = prefs.getBoolean(KEY_SWIPE_UP_ADD, true)
+        val swipeDownSettings = prefs.getBoolean(KEY_SWIPE_DOWN_SETTINGS, true)
+        val groupByCategory = prefs.getBoolean(KEY_GROUP_BY_CATEGORY, false)
 
         val defaultMinQuantity = prefs.getString(KEY_DEFAULT_MIN_QUANTITY, "1.0")
             ?.toDoubleOrNull()
@@ -161,6 +183,9 @@ class SettingsRepository(context: Context) {
             colorPalette = colorPalette,
             filterPlacement = filterPlacement,
             animationSpeed = animationSpeed,
+            swipeUpToAddItem = swipeUpAdd,
+            swipeDownToOpenSettings = swipeDownSettings,
+            groupByCategory = groupByCategory,
             defaultMinQuantity = defaultMinQuantity,
             quantityStep = quantityStep,
             fractionalOnlyForWeightAndVolume = fractionalOnly,
@@ -175,6 +200,9 @@ class SettingsRepository(context: Context) {
         private const val KEY_COLOR_PALETTE = "color_palette"
         private const val KEY_FILTER_PLACEMENT = "filter_placement"
         private const val KEY_ANIMATION_SPEED = "animation_speed"
+        private const val KEY_SWIPE_UP_ADD = "swipe_up_add"
+        private const val KEY_SWIPE_DOWN_SETTINGS = "swipe_down_settings"
+        private const val KEY_GROUP_BY_CATEGORY = "group_by_category"
         private const val KEY_DEFAULT_MIN_QUANTITY = "default_min_quantity"
         private const val KEY_QUANTITY_STEP = "quantity_step"
         private const val KEY_FRACTIONAL_ONLY_WEIGHT_VOLUME = "fractional_only_weight_volume"

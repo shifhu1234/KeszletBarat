@@ -80,6 +80,8 @@ class InventoryRepository(
             "quantity" to updatedItem.quantity.coerceAtLeast(0.0).cleanQuantity(),
             "unit" to updatedItem.unit,
             "minQuantity" to updatedItem.minQuantity.coerceAtLeast(0.0).cleanQuantity(),
+            "isOpened" to updatedItem.isOpened,
+            "note" to updatedItem.note.trim(),
             "updatedAt" to updatedItem.updatedAt
         )
         collection.document(updatedItem.id).set(payload, SetOptions.merge()).await()
@@ -89,6 +91,14 @@ class InventoryRepository(
         val safeQuantity = newQuantity.coerceAtLeast(0.0).cleanQuantity()
         val updates = mapOf(
             "quantity" to safeQuantity,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        collection.document(itemId).set(updates, SetOptions.merge()).await()
+    }
+
+    suspend fun updateOpenedState(itemId: String, isOpened: Boolean) {
+        val updates = mapOf(
+            "isOpened" to isOpened,
             "updatedAt" to System.currentTimeMillis()
         )
         collection.document(itemId).set(updates, SetOptions.merge()).await()
@@ -177,6 +187,8 @@ class InventoryRepository(
             val unit = getString("unit") ?: InventoryUnits.DB
             val quantity = (get("quantity") as? Number)?.toDouble()?.cleanQuantity() ?: 0.0
             val minQuantity = (get("minQuantity") as? Number)?.toDouble()?.cleanQuantity() ?: 1.0
+            val isOpened = getBoolean("isOpened") ?: false
+            val note = getString("note") ?: ""
             val updatedAt = (get("updatedAt") as? Number)?.toLong() ?: System.currentTimeMillis()
 
             InventoryItem(
@@ -186,6 +198,8 @@ class InventoryRepository(
                 quantity = quantity,
                 unit = unit,
                 minQuantity = minQuantity,
+                isOpened = isOpened,
+                note = note,
                 updatedAt = updatedAt
             )
         }.getOrNull()

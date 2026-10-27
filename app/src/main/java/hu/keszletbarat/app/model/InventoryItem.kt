@@ -16,6 +16,8 @@ data class InventoryItem(
     val quantity: Double = 1.0,
     val unit: String = InventoryUnits.DB,
     val minQuantity: Double = 1.0,
+    val isOpened: Boolean = false,
+    val note: String = "",
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     @get:Exclude
@@ -29,6 +31,9 @@ data class InventoryItem(
 
     @get:Exclude
     val normalizedName: String = name.normalizeForSearch()
+
+    @get:Exclude
+    val exactMatchKey: String = name.trim().lowercase()
 
     @get:Exclude
     val lowercaseUnit: String = unit.lowercase()
@@ -126,4 +131,41 @@ object InventoryUnits {
     fun isFractionalUnit(unit: String): Boolean {
         return unit.equals(KG, ignoreCase = true) || unit.equals(LITER, ignoreCase = true)
     }
+}
+
+@Immutable
+data class QuickSuggestion(
+    val name: String,
+    val category: String,
+    val unit: String
+)
+
+object CommonHouseholdSuggestions {
+    val presets: List<QuickSuggestion> = listOf(
+        QuickSuggestion("Tej", "Hűtő", InventoryUnits.LITER),
+        QuickSuggestion("Tojás", "Hűtő", InventoryUnits.DB),
+        QuickSuggestion("Vaj", "Hűtő", InventoryUnits.DB),
+        QuickSuggestion("Sajt", "Hűtő", InventoryUnits.KG),
+        QuickSuggestion("Tejföl", "Hűtő", InventoryUnits.DB),
+        QuickSuggestion("Joghurt", "Hűtő", InventoryUnits.DB),
+        QuickSuggestion("Felvágott", "Hűtő", InventoryUnits.CSOMAG),
+        QuickSuggestion("Kenyér", "Spájz", InventoryUnits.DB),
+        QuickSuggestion("Liszt", "Spájz", InventoryUnits.KG),
+        QuickSuggestion("Cukor", "Spájz", InventoryUnits.KG),
+        QuickSuggestion("Só", "Spájz", InventoryUnits.KG),
+        QuickSuggestion("Étolaj", "Spájz", InventoryUnits.LITER),
+        QuickSuggestion("Rizs", "Spájz", InventoryUnits.KG),
+        QuickSuggestion("Tészta", "Spájz", InventoryUnits.CSOMAG),
+        QuickSuggestion("Kávé", "Spájz", InventoryUnits.CSOMAG),
+        QuickSuggestion("Mosogatószer", "Tisztítószer", InventoryUnits.DB),
+        QuickSuggestion("Zsíroldó", "Tisztítószer", InventoryUnits.DB),
+        QuickSuggestion("Mosógél", "Tisztítószer", InventoryUnits.LITER),
+        QuickSuggestion("Öblítő", "Tisztítószer", InventoryUnits.LITER),
+        QuickSuggestion("WC papír", "Háztartás", InventoryUnits.CSOMAG),
+        QuickSuggestion("Papírtörlő", "Háztartás", InventoryUnits.CSOMAG),
+        QuickSuggestion("Alufólia", "Háztartás", InventoryUnits.DB),
+        QuickSuggestion("Szemeteszsák", "Háztartás", InventoryUnits.CSOMAG),
+        QuickSuggestion("Szappan", "Háztartás", InventoryUnits.DB),
+        QuickSuggestion("Fogkrém", "Háztartás", InventoryUnits.DB)
+    )
 }

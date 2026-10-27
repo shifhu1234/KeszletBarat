@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">KészletBarát</string>
+    <string name="widget_low_stock_desc">Megjeleníti a kifogyott és beszerzendő termékek listáját a főképernyőn.</string>
+    <string name="widget_quick_actions_desc">Gyorsgombok új termék felvételéhez és a Kell venni listához.</string>
+</resources>

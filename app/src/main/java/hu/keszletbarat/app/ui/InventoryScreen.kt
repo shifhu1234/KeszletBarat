@@ -1,13 +1,18 @@
 package hu.keszletbarat.app.ui
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
@@ -18,6 +23,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -71,6 +77,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -95,6 +102,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -103,16 +111,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -121,13 +137,16 @@ import hu.keszletbarat.app.data.AppColorPalette
 import hu.keszletbarat.app.data.AppSettings
 import hu.keszletbarat.app.data.FilterPlacement
 import hu.keszletbarat.app.data.ThemeMode
+import hu.keszletbarat.app.model.CommonHouseholdSuggestions
 import hu.keszletbarat.app.model.FilterItem
 import hu.keszletbarat.app.model.InventoryItem
 import hu.keszletbarat.app.model.InventoryUnits
+import hu.keszletbarat.app.model.QuickSuggestion
 import hu.keszletbarat.app.model.SortDirection
 import hu.keszletbarat.app.model.SortField
 import hu.keszletbarat.app.model.cleanQuantity
 import hu.keszletbarat.app.model.formatQuantity
+import hu.keszletbarat.app.widget.KeszletWidgetManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -135,13 +154,26 @@ fun InventoryScreen(
     viewModel: InventoryViewModel
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val pendingWidgetAction by viewModel.pendingWidgetAction.collectAsStateWithLifecycle()
+    val haptic = LocalHapticFeedback.current
+
     var activeSheetItem by remember { mutableStateOf<InventoryItem?>(null) }
     var isEditorSheetVisible by rememberSaveable { mutableStateOf(false) }
     var isSettingsSheetVisible by rememberSaveable { mutableStateOf(false) }
     var isEdgeSidebarOpen by rememberSaveable { mutableStateOf(false) }
 
+    LaunchedEffect(pendingWidgetAction) {
+        if (pendingWidgetAction == KeszletWidgetManager.ACTION_OPEN_ADD_ITEM) {
+            isSettingsSheetVisible = false
+            activeSheetItem = null
+            isEditorSheetVisible = true
+            viewModel.consumeWidgetAction()
+        }
+    }
+
     val onIncrementItem = remember(viewModel) { viewModel::incrementQuantity }
     val onDecrementItem = remember(viewModel) { viewModel::decrementQuantity }
+    val onToggleOpenedItem = remember(viewModel) { viewModel::toggleItemOpened }
     val onEditItem = remember {
         { item: InventoryItem ->
             activeSheetItem = item
@@ -151,6 +183,99 @@ fun InventoryScreen(
 
     val placement = uiState.settings.filterPlacement
     val animSpeed = uiState.settings.animationSpeed
+    val swipeUpEnabled = uiState.settings.swipeUpToAddItem
+    val swipeDownEnabled = uiState.settings.swipeDownToOpenSettings
+    val canTriggerMainGestures = !isEditorSheetVisible && !isSettingsSheetVisible
+
+    val triggerSwipeUpAdd = {
+        if (canTriggerMainGestures && swipeUpEnabled) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            activeSheetItem = null
+            isEditorSheetVisible = true
+        }
+    }
+
+    val triggerSwipeDownSettings = {
+        if (canTriggerMainGestures && swipeDownEnabled) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            isSettingsSheetVisible = true
+        }
+    }
+
+    val nestedScrollConnection = remember(
+        canTriggerMainGestures,
+        swipeUpEnabled,
+        swipeDownEnabled
+    ) {
+        object : NestedScrollConnection {
+            private var accumulatedOverscrollY = 0f
+            private var gestureConsumedInCurrentDrag = false
+            private val thresholdPx = 115f
+
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if ((available.y > 0f && accumulatedOverscrollY < 0f) ||
+                    (available.y < 0f && accumulatedOverscrollY > 0f)
+                ) {
+                    accumulatedOverscrollY = 0f
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                if (!canTriggerMainGestures || source != NestedScrollSource.UserInput || gestureConsumedInCurrentDrag) {
+                    return Offset.Zero
+                }
+                if (available.y != 0f) {
+                    accumulatedOverscrollY += available.y
+                    if (accumulatedOverscrollY <= -thresholdPx && swipeUpEnabled) {
+                        gestureConsumedInCurrentDrag = true
+                        accumulatedOverscrollY = 0f
+                        triggerSwipeUpAdd()
+                    } else if (accumulatedOverscrollY >= thresholdPx && swipeDownEnabled) {
+                        gestureConsumedInCurrentDrag = true
+                        accumulatedOverscrollY = 0f
+                        triggerSwipeDownSettings()
+                    }
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                accumulatedOverscrollY = 0f
+                gestureConsumedInCurrentDrag = false
+                return Velocity.Zero
+            }
+        }
+    }
+
+    val groupedCategories = remember(
+        uiState.items,
+        uiState.filters,
+        uiState.settings.groupByCategory
+    ) {
+        if (!uiState.settings.groupByCategory) {
+            emptyList()
+        } else {
+            val filterOrderMap = uiState.filters
+                .filter { it.isProductCategory }
+                .mapIndexed { index, filterItem -> filterItem.label.lowercase() to index }
+                .toMap()
+
+            uiState.items
+                .groupBy { it.category }
+                .entries
+                .sortedWith(
+                    compareBy<Map.Entry<String, List<InventoryItem>>> { entry ->
+                        filterOrderMap[entry.key.lowercase()] ?: Int.MAX_VALUE
+                    }.thenBy { it.key.lowercase() }
+                )
+                .map { it.key to it.value }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -170,7 +295,9 @@ fun InventoryScreen(
                     onFilterSelected = viewModel::onFilterSelected,
                     onSortFieldChange = viewModel::setSortField,
                     onSortDirectionChange = viewModel::setSortDirection,
-                    onOpenSettings = { isSettingsSheetVisible = true }
+                    onOpenSettings = { isSettingsSheetVisible = true },
+                    onSwipeUp = triggerSwipeUpAdd,
+                    onSwipeDown = triggerSwipeDownSettings
                 )
             },
             bottomBar = {
@@ -236,12 +363,17 @@ fun InventoryScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        .nestedScroll(nestedScrollConnection)
                 ) {
                     if (uiState.items.isEmpty() && !uiState.isLoading) {
                         val activeFilter = uiState.filters.firstOrNull { it.id == uiState.selectedFilterId }
                         EmptyInventoryState(
                             isLowStockFilter = activeFilter?.isLowStockFilter == true,
                             hasSearchQuery = uiState.searchQuery.isNotBlank(),
+                            swipeUpEnabled = swipeUpEnabled,
+                            swipeDownEnabled = swipeDownEnabled,
+                            onSwipeUp = triggerSwipeUpAdd,
+                            onSwipeDown = triggerSwipeDownSettings,
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
@@ -255,17 +387,45 @@ fun InventoryScreen(
                             ),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            items(
-                                items = uiState.items,
-                                key = { it.id },
-                                contentType = { "inventory_item" }
-                            ) { item ->
-                                InventoryItemRow(
-                                    item = item,
-                                    onIncrement = onIncrementItem,
-                                    onDecrement = onDecrementItem,
-                                    onEditRequest = onEditItem
-                                )
+                            if (uiState.settings.groupByCategory) {
+                                groupedCategories.forEach { (categoryName, categoryItems) ->
+                                    item(
+                                        key = "category_header_$categoryName",
+                                        contentType = "category_header"
+                                    ) {
+                                        CategoryGroupHeader(
+                                            categoryName = categoryName,
+                                            itemCount = categoryItems.size
+                                        )
+                                    }
+                                    items(
+                                        items = categoryItems,
+                                        key = { it.id },
+                                        contentType = { "inventory_item" }
+                                    ) { item ->
+                                        InventoryItemRow(
+                                            item = item,
+                                            onIncrement = onIncrementItem,
+                                            onDecrement = onDecrementItem,
+                                            onToggleOpened = onToggleOpenedItem,
+                                            onEditRequest = onEditItem
+                                        )
+                                    }
+                                }
+                            } else {
+                                items(
+                                    items = uiState.items,
+                                    key = { it.id },
+                                    contentType = { "inventory_item" }
+                                ) { item ->
+                                    InventoryItemRow(
+                                        item = item,
+                                        onIncrement = onIncrementItem,
+                                        onDecrement = onDecrementItem,
+                                        onToggleOpened = onToggleOpenedItem,
+                                        onEditRequest = onEditItem
+                                    )
+                                }
                             }
                         }
                     }
@@ -295,16 +455,27 @@ fun InventoryScreen(
         ) {
             ItemEditorSheetContent(
                 initialItem = activeSheetItem,
+                allItems = uiState.allItems,
                 productCategories = uiState.productCategories,
                 settings = uiState.settings,
-                onSave = { id, name, category, quantity, unit, minQuantity ->
+                onSelectExistingItem = { existingItem ->
+                    activeSheetItem = existingItem
+                },
+                onQuickIncrementExisting = { existingItem ->
+                    viewModel.incrementQuantity(existingItem)
+                    isEditorSheetVisible = false
+                    activeSheetItem = null
+                },
+                onSave = { id, name, category, quantity, unit, minQuantity, isOpened, note ->
                     viewModel.saveItem(
                         existingId = id,
                         name = name,
                         category = category,
                         quantity = quantity,
                         unit = unit,
-                        minQuantity = minQuantity
+                        minQuantity = minQuantity,
+                        isOpened = isOpened,
+                        note = note
                     )
                     isEditorSheetVisible = false
                     activeSheetItem = null
@@ -330,6 +501,9 @@ fun InventoryScreen(
                 onColorPaletteChange = viewModel::setColorPalette,
                 onFilterPlacementChange = viewModel::setFilterPlacement,
                 onAnimationSpeedChange = viewModel::setAnimationSpeed,
+                onSwipeUpToAddItemChange = viewModel::setSwipeUpToAddItem,
+                onSwipeDownToOpenSettingsChange = viewModel::setSwipeDownToOpenSettings,
+                onGroupByCategoryChange = viewModel::setGroupByCategory,
                 onMoveFilter = viewModel::moveFilterOrder,
                 onAddFilter = viewModel::addFilter,
                 onRenameFilter = viewModel::renameFilter,
@@ -338,6 +512,37 @@ fun InventoryScreen(
                 onDefaultMinQuantityChange = viewModel::setDefaultMinQuantity,
                 onQuantityStepChange = viewModel::setQuantityStep,
                 onFractionalOnlyForWeightAndVolumeChange = viewModel::setFractionalOnlyForWeightAndVolume
+            )
+        }
+    }
+}
+
+@Composable
+private fun CategoryGroupHeader(
+    categoryName: String,
+    itemCount: Int
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp, bottom = 2.dp, start = 4.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = categoryName,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.primary
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Text(
+                text = "$itemCount db",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
             )
         }
     }
@@ -392,6 +597,44 @@ private fun AdaptiveBottomSheet(
         }
     } else {
         val duration = animationSpeed.durationMillis
+        val isBouncy = animationSpeed == AnimationSpeed.BOUNCY
+
+        val sheetEnterTransition = if (isBouncy) {
+            scaleIn(
+                initialScale = 0.80f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ) + slideInVertically(
+                initialOffsetY = { it / 2 },
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        } else {
+            slideInVertically(
+                initialOffsetY = { it },
+                animationSpec = tween(duration)
+            )
+        }
+
+        val sheetExitTransition = if (isBouncy) {
+            scaleOut(
+                targetScale = 0.84f,
+                animationSpec = tween(190)
+            ) + slideOutVertically(
+                targetOffsetY = { it / 2 },
+                animationSpec = tween(190)
+            )
+        } else {
+            slideOutVertically(
+                targetOffsetY = { it },
+                animationSpec = tween(duration)
+            )
+        }
+
         AnimatedVisibility(
             visible = visible,
             enter = fadeIn(animationSpec = tween(duration)),
@@ -414,14 +657,8 @@ private fun AdaptiveBottomSheet(
                     tonalElevation = 6.dp,
                     modifier = Modifier
                         .animateEnterExit(
-                            enter = slideInVertically(
-                                initialOffsetY = { it },
-                                animationSpec = tween(duration)
-                            ),
-                            exit = slideOutVertically(
-                                targetOffsetY = { it },
-                                animationSpec = tween(duration)
-                            )
+                            enter = sheetEnterTransition,
+                            exit = sheetExitTransition
                         )
                         .fillMaxWidth()
                         .heightIn(max = maxSheetHeight)
@@ -474,17 +711,37 @@ private fun InventoryTopBar(
     onFilterSelected: (String) -> Unit,
     onSortFieldChange: (SortField) -> Unit,
     onSortDirectionChange: (SortDirection) -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onSwipeUp: () -> Unit,
+    onSwipeDown: () -> Unit
 ) {
     var isSortMenuExpanded by remember { mutableStateOf(false) }
     var isFilterDropdownExpanded by remember { mutableStateOf(false) }
     var isCollapsibleOpen by rememberSaveable { mutableStateOf(false) }
+    var dragAccumulator by remember { mutableFloatStateOf(0f) }
 
     val activeFilter = filters.firstOrNull { it.id == selectedFilterId } ?: filters.firstOrNull()
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp
+        tonalElevation = 2.dp,
+        modifier = Modifier.pointerInput(onSwipeUp, onSwipeDown) {
+            detectVerticalDragGestures(
+                onDragStart = { dragAccumulator = 0f },
+                onDragEnd = { dragAccumulator = 0f },
+                onDragCancel = { dragAccumulator = 0f },
+                onVerticalDrag = { _, dragAmount ->
+                    dragAccumulator += dragAmount
+                    if (dragAccumulator <= -90f) {
+                        dragAccumulator = 0f
+                        onSwipeUp()
+                    } else if (dragAccumulator >= 90f) {
+                        dragAccumulator = 0f
+                        onSwipeDown()
+                    }
+                }
+            )
+        }
     ) {
         Column(
             modifier = Modifier
@@ -756,9 +1013,19 @@ private fun InventoryTopBar(
                                     }
                                 }
                             } else {
+                                val enterTransition = if (animationSpeed == AnimationSpeed.BOUNCY) {
+                                    expandVertically(
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        )
+                                    )
+                                } else {
+                                    expandVertically(tween(animationSpeed.durationMillis))
+                                }
                                 AnimatedVisibility(
                                     visible = isCollapsibleOpen,
-                                    enter = expandVertically(tween(animationSpeed.durationMillis)),
+                                    enter = enterTransition,
                                     exit = shrinkVertically(tween(animationSpeed.durationMillis))
                                 ) {
                                     Column {
@@ -922,9 +1189,19 @@ private fun CollapsibleEdgeSidebar(
             }
         } else {
             val duration = animationSpeed.durationMillis
+            val enterSpec = if (animationSpeed == AnimationSpeed.BOUNCY) {
+                expandHorizontally(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+            } else {
+                expandHorizontally(animationSpec = tween(duration))
+            }
             AnimatedVisibility(
                 visible = isOpen,
-                enter = expandHorizontally(animationSpec = tween(duration)),
+                enter = enterSpec,
                 exit = shrinkHorizontally(animationSpec = tween(duration))
             ) {
                 Row(modifier = Modifier.fillMaxHeight()) {
@@ -1113,6 +1390,7 @@ private fun InventoryItemRow(
     item: InventoryItem,
     onIncrement: (InventoryItem) -> Unit,
     onDecrement: (InventoryItem) -> Unit,
+    onToggleOpened: (InventoryItem) -> Unit,
     onEditRequest: (InventoryItem) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -1175,7 +1453,7 @@ private fun InventoryItemRow(
                 Row(
                     modifier = Modifier.height(22.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = "${item.category} • ${item.unit}",
@@ -1198,6 +1476,27 @@ private fun InventoryItemRow(
                             contentColor = MaterialTheme.colorScheme.onTertiaryContainer
                         )
                     }
+
+                    if (!isOutOfStock || item.isOpened) {
+                        OpenedStatusBadge(
+                            isOpened = item.isOpened,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onToggleOpened(item)
+                            }
+                        )
+                    }
+                }
+
+                if (item.note.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = item.note,
+                        style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
@@ -1262,6 +1561,51 @@ private fun InventoryItemRow(
 }
 
 @Composable
+private fun OpenedStatusBadge(
+    isOpened: Boolean,
+    onClick: () -> Unit
+) {
+    val bgColor = if (isOpened) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f)
+    }
+    val txtColor = if (isOpened) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+    }
+
+    Surface(
+        color = bgColor,
+        contentColor = txtColor,
+        shape = RoundedCornerShape(6.dp),
+        border = if (isOpened) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        },
+        modifier = Modifier
+            .height(20.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(horizontal = 6.dp)
+        ) {
+            Text(
+                text = if (isOpened) "Bontott ✓" else "Bontatlan",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = if (isOpened) FontWeight.Bold else FontWeight.Medium
+                ),
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
 private fun StatusBadge(
     text: String,
     containerColor: Color,
@@ -1290,10 +1634,34 @@ private fun StatusBadge(
 private fun EmptyInventoryState(
     isLowStockFilter: Boolean,
     hasSearchQuery: Boolean,
+    swipeUpEnabled: Boolean,
+    swipeDownEnabled: Boolean,
+    onSwipeUp: () -> Unit,
+    onSwipeDown: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var dragAccumulator by remember { mutableFloatStateOf(0f) }
+
     Box(
-        modifier = modifier.padding(32.dp),
+        modifier = modifier
+            .pointerInput(swipeUpEnabled, swipeDownEnabled, onSwipeUp, onSwipeDown) {
+                detectVerticalDragGestures(
+                    onDragStart = { dragAccumulator = 0f },
+                    onDragEnd = { dragAccumulator = 0f },
+                    onDragCancel = { dragAccumulator = 0f },
+                    onVerticalDrag = { _, dragAmount ->
+                        dragAccumulator += dragAmount
+                        if (dragAccumulator <= -90f && swipeUpEnabled) {
+                            dragAccumulator = 0f
+                            onSwipeUp()
+                        } else if (dragAccumulator >= 90f && swipeDownEnabled) {
+                            dragAccumulator = 0f
+                            onSwipeDown()
+                        }
+                    }
+                )
+            }
+            .padding(32.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -1320,6 +1688,14 @@ private fun EmptyInventoryState(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+            if (swipeUpEnabled) {
+                Text(
+                    text = "Tipp: húzd felfelé a képernyőt új termék gyors felvételéhez!",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center
+                )
+            }
         }
     }
 }
@@ -1327,15 +1703,20 @@ private fun EmptyInventoryState(
 @Composable
 private fun ItemEditorSheetContent(
     initialItem: InventoryItem?,
+    allItems: List<InventoryItem>,
     productCategories: List<FilterItem>,
     settings: AppSettings,
+    onSelectExistingItem: (InventoryItem) -> Unit,
+    onQuickIncrementExisting: (InventoryItem) -> Unit,
     onSave: (
         id: String?,
         name: String,
         category: String,
         quantity: Double,
         unit: String,
-        minQuantity: Double
+        minQuantity: Double,
+        isOpened: Boolean,
+        note: String
     ) -> Unit,
     onDelete: (String) -> Unit
 ) {
@@ -1359,10 +1740,50 @@ private fun ItemEditorSheetContent(
     var minQuantity by rememberSaveable(initialItem?.id) {
         mutableDoubleStateOf(initialItem?.minQuantity ?: settings.defaultMinQuantity)
     }
+    var isOpened by rememberSaveable(initialItem?.id) {
+        mutableStateOf(initialItem?.isOpened ?: false)
+    }
+    var note by rememberSaveable(initialItem?.id) {
+        mutableStateOf(initialItem?.note ?: "")
+    }
 
     LaunchedEffect(selectedUnit) {
         if (initialItem == null) {
             stepSize = settings.effectiveStepForUnit(selectedUnit)
+        }
+    }
+
+    val normalizedTypedName = name.trim().lowercase()
+    val duplicateItem = remember(normalizedTypedName, allItems, initialItem?.id) {
+        if (normalizedTypedName.isBlank()) {
+            null
+        } else {
+            allItems.firstOrNull { item ->
+                item.id != initialItem?.id && item.exactMatchKey == normalizedTypedName
+            }
+        }
+    }
+
+    val quickSuggestions = remember(normalizedTypedName, allItems, initialItem?.id) {
+        if (initialItem != null) {
+            emptyList()
+        } else {
+            val combined = buildList {
+                allItems.forEach { existing ->
+                    add(QuickSuggestion(existing.name, existing.category, existing.unit))
+                }
+                addAll(CommonHouseholdSuggestions.presets)
+            }.distinctBy { it.name.trim().lowercase() }
+
+            if (normalizedTypedName.isBlank()) {
+                val existingKeys = allItems.map { it.exactMatchKey }.toSet()
+                combined.filter { it.name.trim().lowercase() !in existingKeys }.take(8)
+            } else {
+                combined.filter { suggestion ->
+                    val key = suggestion.name.trim().lowercase()
+                    key != normalizedTypedName && key.contains(normalizedTypedName)
+                }.take(8)
+            }
         }
     }
 
@@ -1409,8 +1830,115 @@ private fun ItemEditorSheetContent(
             value = name,
             onValueChange = { name = it },
             label = { Text("Termék neve") },
-            placeholder = { Text("pl. Alufólia, Tej, Zsíroldó") },
+            placeholder = { Text("pl. Tej 2.8%, Alufólia, Zsíroldó") },
             singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.Sentences,
+                imeAction = ImeAction.Next
+            )
+        )
+
+        if (duplicateItem != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Ez a termék már szerepel a készletben!",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                    Text(
+                        text = "${duplicateItem.name}: jelenleg ${duplicateItem.formattedQuantity} ${duplicateItem.unit} (${duplicateItem.category})",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val dupStep = settings.effectiveStepForUnit(duplicateItem.unit)
+                        FilledTonalButton(
+                            onClick = { onQuickIncrementExisting(duplicateItem) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "+${dupStep.formatQuantity()} ${duplicateItem.unit} hozzáadása",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { onSelectExistingItem(duplicateItem) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "Meglévő szerkesztése",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (quickSuggestions.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = if (normalizedTypedName.isBlank()) "Gyors javaslatok" else "Találatok és javaslatok",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CompactChipFlowRow {
+                    quickSuggestions.forEach { suggestion ->
+                        CompactFilterChip(
+                            selected = false,
+                            onClick = {
+                                name = suggestion.name
+                                val matchingCat = productCategories.firstOrNull {
+                                    it.label.equals(suggestion.category, ignoreCase = true)
+                                }
+                                if (matchingCat != null) {
+                                    selectedCategory = matchingCat.label
+                                }
+                                selectedUnit = suggestion.unit
+                            },
+                            label = "${suggestion.name} (${suggestion.unit})"
+                        )
+                    }
+                }
+            }
+        }
+
+        OutlinedTextField(
+            value = note,
+            onValueChange = { note = it },
+            label = { Text("Megjegyzés (opcionális)") },
+            placeholder = { Text("pl. laktózmentes, kedvenc márka, lejárat...") },
+            singleLine = false,
+            maxLines = 2,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
             keyboardOptions = KeyboardOptions(
@@ -1418,6 +1946,37 @@ private fun ItemEditorSheetContent(
                 imeAction = ImeAction.Done
             )
         )
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isOpened = !isOpened }
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        text = "Megbontott termék (Bontott jelvény)",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    Text(
+                        text = "Jelöld be, ha a csomagolás vagy palack már fel van bontva",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = isOpened,
+                    onCheckedChange = { isOpened = it }
+                )
+            }
+        }
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
@@ -1568,7 +2127,9 @@ private fun ItemEditorSheetContent(
                     selectedCategory,
                     quantity,
                     selectedUnit,
-                    minQuantity
+                    minQuantity,
+                    isOpened,
+                    note
                 )
             },
             enabled = name.isNotBlank(),
@@ -1595,6 +2156,9 @@ private fun SettingsSheetContent(
     onColorPaletteChange: (AppColorPalette) -> Unit,
     onFilterPlacementChange: (FilterPlacement) -> Unit,
     onAnimationSpeedChange: (AnimationSpeed) -> Unit,
+    onSwipeUpToAddItemChange: (Boolean) -> Unit,
+    onSwipeDownToOpenSettingsChange: (Boolean) -> Unit,
+    onGroupByCategoryChange: (Boolean) -> Unit,
     onMoveFilter: (String, Int) -> Unit,
     onAddFilter: (String) -> Unit,
     onRenameFilter: (String, String) -> Unit,
@@ -1604,6 +2168,7 @@ private fun SettingsSheetContent(
     onQuantityStepChange: (Double) -> Unit,
     onFractionalOnlyForWeightAndVolumeChange: (Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     var newFilterName by rememberSaveable { mutableStateOf("") }
     var filterBeingRenamed by remember { mutableStateOf<FilterItem?>(null) }
     var renameText by remember { mutableStateOf("") }
@@ -1733,7 +2298,7 @@ private fun SettingsSheetContent(
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Animációk sebessége",
+                text = "Animáció stílusa",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
             )
             CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
@@ -1783,6 +2348,179 @@ private fun SettingsSheetContent(
                         onClick = { onFilterPlacementChange(placement) },
                         label = placement.label
                     )
+                }
+            }
+        }
+
+        HorizontalDivider()
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "Nézet és gesztusok",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        text = "Csoportosítás kategória szerint",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = "A készletlistában kategóriánként külön fejléc alatt jelennek meg a termékek",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.groupByCategory,
+                    onCheckedChange = onGroupByCategoryChange
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        text = "Felfelé húzás: Új termék felvétele",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = "A főoldalon felfelé húzva (a lista alján vagy üres képernyőn) megnyílik a termék hozzáadása",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.swipeUpToAddItem,
+                    onCheckedChange = onSwipeUpToAddItemChange
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        text = "Lefelé húzás: Beállítások megnyitása",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = "A főoldalon lefelé húzva (a lista tetején vagy a felső sávon) megnyílnak a beállítások",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.swipeDownToOpenSettings,
+                    onCheckedChange = onSwipeDownToOpenSettingsChange
+                )
+            }
+        }
+
+        HorizontalDivider()
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "Kezdőképernyő Widgetek",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+            )
+            Text(
+                text = "A KészletBarát két natív widgetet kínál, amelyeket közvetlenül a telefonod főképernyőjére tűzhetsz ki (vagy a főképernyőn hosszan nyomva a Widgetek menüből is hozzáadhatod őket):",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "1. Kell venni (Kifogyóban) lista widget",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "Megjeleníti a főképernyőn az elfogyott és kifogyóban lévő tételek számát, valamint a legfontosabb beszerzendő termékeket.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            val pinned = KeszletWidgetManager.requestPinLowStockWidget(context)
+                            if (!pinned) {
+                                Toast.makeText(
+                                    context,
+                                    "A főképernyőn hosszan nyomva a Widgetek között tudod hozzáadni!",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Kell venni widget kitűzése a főképernyőre")
+                    }
+                }
+            }
+
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "2. Gyorsgombok widget",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "Kompakt sáv a főképernyőre, amellyel egyetlen érintéssel megnyithatod az Új termék felvételét vagy a Kell venni listát.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            val pinned = KeszletWidgetManager.requestPinQuickActionWidget(context)
+                            if (!pinned) {
+                                Toast.makeText(
+                                    context,
+                                    "A főképernyőn hosszan nyomva a Widgetek között tudod hozzáadni!",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Gyorsgombok widget kitűzése a főképernyőre")
+                    }
                 }
             }
         }

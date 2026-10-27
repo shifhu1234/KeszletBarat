@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_quick_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="10dp">
+
+    <TextView
+        android:id="@+id/widget_quick_open"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginRight="6dp"
+        android:layout_weight="1"
+        android:background="@drawable/widget_btn_secondary"
+        android:gravity="center"
+        android:text="📦 Készlet"
+        android:textColor="#FFFFFFFF"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widget_quick_low_stock"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginRight="6dp"
+        android:layout_weight="1"
+        android:background="@drawable/widget_btn_secondary"
+        android:gravity="center"
+        android:text="🛒 Kell venni"
+        android:textColor="#FFFFB4AB"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widget_quick_add"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@drawable/widget_btn_primary"
+        android:gravity="center"
+        android:text="+ Új termék"
+        android:textColor="#FFFFFFFF"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+</LinearLayout>
