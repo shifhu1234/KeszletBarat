@@ -1,6 +1,7 @@
 package hu.keszletbarat.app.data
 
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.PersistentCacheSettings
@@ -11,21 +12,36 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
 
+data class FirestoreSyncResult(
+    val items: List<InventoryItem> = emptyList(),
+    val errorMessage: String? = null
+)
+
 class InventoryRepository(
     private val firestore: FirebaseFirestore = createConfiguredFirestore()
 ) {
     private val collection = firestore.collection(COLLECTION_NAME)
 
-    fun observeItems(): Flow<List<InventoryItem>> = callbackFlow {
+    fun observeItems(): Flow<FirestoreSyncResult> = callbackFlow {
+        trySend(FirestoreSyncResult(items = emptyList()))
+
         val registration = collection.addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
             if (error != null) {
+                val message = if (error.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                    "Firestore hozzáférés megtagadva (PERMISSION_DENIED). Engedélyezd a Rules fülön az olvasást/írást a Firebase Console-ban!"
+                } else {
+                    error.localizedMessage ?: "Szinkronizációs hiba történt."
+                }
+                trySend(FirestoreSyncResult(items = emptyList(), errorMessage = message))
                 return@addSnapshotListener
             }
             if (snapshot != null) {
                 val items = snapshot.documents.mapNotNull { doc ->
-                    doc.toObject(InventoryItem::class.java)?.copy(id = doc.id)
+                    runCatching {
+                        doc.toObject(InventoryItem::class.java)?.copy(id = doc.id)
+                    }.getOrNull()
                 }
-                trySend(items)
+                trySend(FirestoreSyncResult(items = items, errorMessage = null))
             }
         }
         awaitClose { registration.remove() }
@@ -50,7 +66,7 @@ class InventoryRepository(
             "quantity" to safeQuantity,
             "updatedAt" to System.currentTimeMillis()
         )
-        collection.document(itemId).update(updates).await()
+        collection.document(itemId).set(updates, SetOptions.merge()).await()
     }
 
     suspend fun deleteItem(itemId: String) {
@@ -64,7 +80,7 @@ class InventoryRepository(
             val instance = FirebaseFirestore.getInstance()
             return try {
                 val cacheSettings = PersistentCacheSettings.newBuilder()
-                    .setSizeBytes( FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
+                    .setSizeBytes(FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
                     .build()
                 val settings = FirebaseFirestoreSettings.Builder()
                     .setLocalCacheSettings(cacheSettings)

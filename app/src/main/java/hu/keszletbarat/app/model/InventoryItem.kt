@@ -2,6 +2,7 @@ package hu.keszletbarat.app.model
 
 import androidx.compose.runtime.Immutable
 import com.google.firebase.firestore.DocumentId
+import com.google.firebase.firestore.Exclude
 import java.util.UUID
 
 @Immutable
@@ -15,9 +16,11 @@ data class InventoryItem(
     val minQuantity: Int = 1,
     val updatedAt: Long = System.currentTimeMillis()
 ) {
+    @get:Exclude
     val isOutOfStock: Boolean
         get() = quantity <= 0
 
+    @get:Exclude
     val isLowStock: Boolean
         get() = quantity == 0 || quantity <= minQuantity
 }

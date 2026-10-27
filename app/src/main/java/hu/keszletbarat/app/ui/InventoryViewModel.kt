@@ -3,6 +3,7 @@ package hu.keszletbarat.app.ui
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.firestore.FirebaseFirestoreException
 import hu.keszletbarat.app.data.InventoryRepository
 import hu.keszletbarat.app.model.CategoryFilter
 import hu.keszletbarat.app.model.InventoryItem
@@ -25,7 +26,8 @@ data class InventoryUiState(
     val searchQuery: String = "",
     val selectedCategory: CategoryFilter = CategoryFilter.ALL,
     val lowStockCount: Int = 0,
-    val isLoading: Boolean = true
+    val isLoading: Boolean = true,
+    val syncError: String? = null
 )
 
 class InventoryViewModel(
@@ -40,12 +42,15 @@ class InventoryViewModel(
 
     private val _optimisticOverrides = MutableStateFlow<Map<String, InventoryItem>>(emptyMap())
     private val _optimisticDeletedIds = MutableStateFlow<Set<String>>(emptySet())
+    private val _writeError = MutableStateFlow<String?>(null)
 
-    private val mergedItemsFlow = combine(
+    private val mergedStateFlow = combine(
         repository.observeItems(),
         _optimisticOverrides,
-        _optimisticDeletedIds
-    ) { remoteItems, overrides, deletedIds ->
+        _optimisticDeletedIds,
+        _writeError
+    ) { syncResult, overrides, deletedIds, writeError ->
+        val remoteItems = syncResult.items
         val itemMap = LinkedHashMap<String, InventoryItem>(remoteItems.size + overrides.size)
         for (item in remoteItems) {
             if (item.id !in deletedIds) {
@@ -60,14 +65,15 @@ class InventoryViewModel(
                 }
             }
         }
-        itemMap.values.sortedBy { it.name.lowercase() }
+        val sorted = itemMap.values.sortedBy { it.name.lowercase() }
+        Pair(sorted, syncResult.errorMessage ?: writeError)
     }.flowOn(Dispatchers.Default)
 
     val uiState: StateFlow<InventoryUiState> = combine(
-        mergedItemsFlow,
+        mergedStateFlow,
         _searchQuery,
         _selectedCategory
-    ) { allItems, query, category ->
+    ) { (allItems, errorMsg), query, category ->
         val normalizedQuery = query.normalizeSearch()
         val lowStockTotal = allItems.count { it.quantity == 0 || it.quantity <= it.minQuantity }
 
@@ -90,7 +96,8 @@ class InventoryViewModel(
             searchQuery = query,
             selectedCategory = category,
             lowStockCount = lowStockTotal,
-            isLoading = false
+            isLoading = false,
+            syncError = errorMsg
         )
     }
         .flowOn(Dispatchers.Default)
@@ -126,6 +133,9 @@ class InventoryViewModel(
         viewModelScope.launch {
             runCatching {
                 repository.updateQuantity(item.id, newQuantity)
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
             }
         }
     }
@@ -141,8 +151,9 @@ class InventoryViewModel(
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) return
 
+        val itemId = existingId ?: UUID.randomUUID().toString()
         val item = InventoryItem(
-            id = existingId ?: UUID.randomUUID().toString(),
+            id = itemId,
             name = trimmedName,
             category = category,
             quantity = quantity.coerceAtLeast(0),
@@ -151,10 +162,14 @@ class InventoryViewModel(
             updatedAt = System.currentTimeMillis()
         )
 
+        _optimisticDeletedIds.update { current -> current - itemId }
         _optimisticOverrides.update { current -> current + (item.id to item) }
         viewModelScope.launch {
             runCatching {
                 repository.upsertItem(item)
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
             }
         }
     }
@@ -165,7 +180,19 @@ class InventoryViewModel(
         viewModelScope.launch {
             runCatching {
                 repository.deleteItem(itemId)
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
             }
+        }
+    }
+
+    private fun handleFirestoreError(throwable: Throwable) {
+        val firestoreException = throwable as? FirebaseFirestoreException
+        _writeError.value = if (firestoreException?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+            "Firestore hozzáférés megtagadva (PERMISSION_DENIED). Engedélyezd a Rules fülön az olvasást/írást a Firebase Console-ban!"
+        } else {
+            throwable.localizedMessage ?: "Mentési hiba történt."
         }
     }
 

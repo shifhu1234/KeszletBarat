@@ -38,8 +38,6 @@ import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ShoppingCartCheckout
 import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -78,7 +76,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -105,6 +102,7 @@ fun InventoryScreen(
             InventoryTopBar(
                 searchQuery = uiState.searchQuery,
                 selectedCategory = uiState.selectedCategory,
+                syncError = uiState.syncError,
                 onSearchQueryChange = viewModel::onSearchQueryChange,
                 onCategorySelected = viewModel::onCategorySelected
             )
@@ -198,6 +196,7 @@ fun InventoryScreen(
 private fun InventoryTopBar(
     searchQuery: String,
     selectedCategory: CategoryFilter,
+    syncError: String?,
     onSearchQueryChange: (String) -> Unit,
     onCategorySelected: (CategoryFilter) -> Unit
 ) {
@@ -292,6 +291,34 @@ private fun InventoryTopBar(
                             FilterChipDefaults.filterChipColors()
                         }
                     )
+                }
+            }
+
+            if (syncError != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.WarningAmber,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = syncError,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
         }
