@@ -3,10 +3,13 @@ package hu.keszletbarat.app.ui
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
@@ -27,6 +30,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,6 +48,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -74,6 +79,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -106,9 +112,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -118,10 +127,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -136,6 +147,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -143,10 +156,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import hu.keszletbarat.app.data.AnimationSpeed
 import hu.keszletbarat.app.data.AppColorPalette
 import hu.keszletbarat.app.data.AppSettings
+import hu.keszletbarat.app.data.BackupFormat
 import hu.keszletbarat.app.data.FilterPlacement
 import hu.keszletbarat.app.data.GestureDirection
 import hu.keszletbarat.app.data.ItemLayoutMode
+import hu.keszletbarat.app.data.ItemSwipeAction
 import hu.keszletbarat.app.data.ThemeMode
+import hu.keszletbarat.app.data.UiScale
 import hu.keszletbarat.app.model.CommonHouseholdSuggestions
 import hu.keszletbarat.app.model.FilterItem
 import hu.keszletbarat.app.model.InventoryItem
@@ -157,7 +173,23 @@ import hu.keszletbarat.app.model.SortField
 import hu.keszletbarat.app.model.cleanQuantity
 import hu.keszletbarat.app.model.formatQuantity
 import hu.keszletbarat.app.widget.KeszletWidgetManager
+import kotlinx.coroutines.delay
 import kotlin.math.abs
+import kotlin.math.roundToInt
+
+@Immutable
+private data class UndoBannerData(
+    val itemSnapshot: InventoryItem,
+    val message: String,
+    val timestamp: Long = SystemClock.uptimeMillis()
+)
+
+private enum class SettingsTab(val label: String) {
+    APPEARANCE("Megjelenés"),
+    BEHAVIOR("Működés"),
+    CATEGORIES("Szűrők"),
+    BACKUP_EXTRAS("Mentés & Extrák")
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -166,14 +198,94 @@ fun InventoryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val pendingWidgetAction by viewModel.pendingWidgetAction.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
-    val density = LocalDensity.current.density
+    val baseDensity = LocalDensity.current
+    val scaleFactor = uiState.settings.uiScale.scaleFactor
+    val scaledDensity = remember(baseDensity, scaleFactor) {
+        Density(
+            density = baseDensity.density * scaleFactor,
+            fontScale = baseDensity.fontScale * scaleFactor
+        )
+    }
 
     var activeSheetItem by remember { mutableStateOf<InventoryItem?>(null) }
     var isEditorSheetVisible by rememberSaveable { mutableStateOf(false) }
     var isSettingsSheetVisible by rememberSaveable { mutableStateOf(false) }
     var isEdgeSidebarOpen by rememberSaveable { mutableStateOf(false) }
     var editorOpenSessionCounter by remember { mutableLongStateOf(0L) }
+    var collapsedCategories by rememberSaveable { mutableStateOf(emptySet<String>()) }
+    var isTopBarHiddenByScroll by remember { mutableStateOf(false) }
+    var undoBannerData by remember { mutableStateOf<UndoBannerData?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val content = viewModel.exportBackupContent(uiState.settings.backupFormat)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(content.toByteArray(Charsets.UTF_8))
+                }
+                Toast.makeText(
+                    context,
+                    "Biztonsági mentés sikeresen elmentve!",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }.onFailure {
+                Toast.makeText(
+                    context,
+                    "Hiba a biztonsági mentés írásakor.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val content = context.contentResolver.openInputStream(uri)?.use { input ->
+                    input.bufferedReader(Charsets.UTF_8).readText()
+                }.orEmpty()
+                val importedCount = viewModel.importBackupContent(content)
+                if (importedCount > 0) {
+                    Toast.makeText(
+                        context,
+                        "$importedCount termék sikeresen importálva!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        context,
+                        "Nem található érvényes termék a kiválasztott fájlban.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }.onFailure {
+                Toast.makeText(
+                    context,
+                    "Hiba a fájl beolvasásakor.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    LaunchedEffect(undoBannerData?.timestamp) {
+        if (undoBannerData != null) {
+            delay(4500L)
+            undoBannerData = null
+        }
+    }
+
+    LaunchedEffect(uiState.settings.autoHideTopBarOnScroll, uiState.searchQuery, uiState.items.isEmpty()) {
+        if (!uiState.settings.autoHideTopBarOnScroll || uiState.searchQuery.isNotBlank() || uiState.items.isEmpty()) {
+            isTopBarHiddenByScroll = false
+        }
+    }
 
     LaunchedEffect(pendingWidgetAction) {
         if (pendingWidgetAction == KeszletWidgetManager.ACTION_OPEN_ADD_ITEM) {
@@ -188,10 +300,31 @@ fun InventoryScreen(
     val onIncrementItem = remember(viewModel) { viewModel::incrementQuantity }
     val onDecrementItem = remember(viewModel) { viewModel::decrementQuantity }
     val onToggleOpenedItem = remember(viewModel) { viewModel::toggleItemOpened }
+    val onToggleFavoriteItem = remember(viewModel) { viewModel::toggleItemFavorite }
     val onEditItem = remember {
         { item: InventoryItem ->
             activeSheetItem = item
             isEditorSheetVisible = true
+        }
+    }
+
+    val onExecuteItemSwipeAction = remember(viewModel) {
+        { item: InventoryItem, action: ItemSwipeAction ->
+            when (action) {
+                ItemSwipeAction.ZERO_QUANTITY -> {
+                    if (item.quantity > 0.0) {
+                        undoBannerData = UndoBannerData(
+                            itemSnapshot = item,
+                            message = "„${item.name}” lenullázva"
+                        )
+                        viewModel.zeroItemQuantity(item)
+                    }
+                }
+                ItemSwipeAction.TOGGLE_OPENED -> {
+                    viewModel.toggleItemOpened(item)
+                }
+                ItemSwipeAction.NONE -> {}
+            }
         }
     }
 
@@ -200,10 +333,13 @@ fun InventoryScreen(
     val layoutMode = uiState.settings.itemLayoutMode
     val addGesture = uiState.settings.addItemGesture
     val settingsGesture = uiState.settings.openSettingsGesture
+    val hasItemHorizontalSwipe = uiState.settings.itemSwipeRightAction != ItemSwipeAction.NONE ||
+        uiState.settings.itemSwipeLeftAction != ItemSwipeAction.NONE
     val canTriggerMainGestures = !isEditorSheetVisible && !isSettingsSheetVisible && !isEdgeSidebarOpen
 
     var lastGestureTriggerTime by remember { mutableLongStateOf(0L) }
     var lastTouchDownTime by remember { mutableLongStateOf(0L) }
+    val densityVal = scaledDensity.density
 
     val isDirectionAssigned = { dir: GestureDirection ->
         dir != GestureDirection.NONE && (addGesture == dir || settingsGesture == dir)
@@ -230,9 +366,25 @@ fun InventoryScreen(
         canTriggerMainGestures,
         addGesture,
         settingsGesture,
-        density
+        densityVal,
+        uiState.settings.autoHideTopBarOnScroll,
+        uiState.searchQuery
     ) {
         object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (uiState.settings.autoHideTopBarOnScroll &&
+                    source == NestedScrollSource.UserInput &&
+                    uiState.searchQuery.isBlank()
+                ) {
+                    if (available.y < -18f) {
+                        isTopBarHiddenByScroll = true
+                    } else if (available.y > 14f) {
+                        isTopBarHiddenByScroll = false
+                    }
+                }
+                return Offset.Zero
+            }
+
             override suspend fun onPreFling(available: Velocity): Velocity {
                 if (!canTriggerMainGestures) return Velocity.Zero
                 val now = SystemClock.uptimeMillis()
@@ -240,7 +392,7 @@ fun InventoryScreen(
                     return available
                 }
                 val touchDuration = now - lastTouchDownTime
-                val vyDpPerSec = available.y / density
+                val vyDpPerSec = available.y / densityVal
                 if (touchDuration in 15L..165L && abs(vyDpPerSec) >= 2500f) {
                     val dir = if (vyDpPerSec < 0f) GestureDirection.SWIPE_UP else GestureDirection.SWIPE_DOWN
                     if (isDirectionAssigned(dir)) {
@@ -278,426 +430,677 @@ fun InventoryScreen(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(canTriggerMainGestures, addGesture, settingsGesture, density) {
-                if (!canTriggerMainGestures) return@pointerInput
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    val startX = down.position.x
-                    val startY = down.position.y
-                    val startTime = down.uptimeMillis
-                    lastTouchDownTime = startTime
-                    var firedInThisGesture = false
+    CompositionLocalProvider(LocalDensity provides scaledDensity) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(
+                    canTriggerMainGestures,
+                    addGesture,
+                    settingsGesture,
+                    hasItemHorizontalSwipe,
+                    densityVal
+                ) {
+                    if (!canTriggerMainGestures) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        val startX = down.position.x
+                        val startY = down.position.y
+                        val startTime = down.uptimeMillis
+                        lastTouchDownTime = startTime
+                        var firedInThisGesture = false
 
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) break
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
 
-                        if (!firedInThisGesture) {
-                            val dt = (change.uptimeMillis - startTime).coerceAtLeast(1L)
-                            val dxDp = (change.position.x - startX) / density
-                            val dyDp = (change.position.y - startY) / density
-                            val absDx = abs(dxDp)
-                            val absDy = abs(dyDp)
+                            if (!firedInThisGesture) {
+                                val dt = (change.uptimeMillis - startTime).coerceAtLeast(1L)
+                                val dxDp = (change.position.x - startX) / densityVal
+                                val dyDp = (change.position.y - startY) / densityVal
+                                val absDx = abs(dxDp)
+                                val absDy = abs(dyDp)
 
-                            if (dt in 12L..135L && absDy >= 68f && absDy > absDx * 1.6f) {
-                                val vyDpPerSec = (absDy * 1000f) / dt
-                                if (vyDpPerSec >= 1450f) {
-                                    val dir = if (dyDp < 0f) GestureDirection.SWIPE_UP else GestureDirection.SWIPE_DOWN
-                                    if (isDirectionAssigned(dir)) {
-                                        firedInThisGesture = true
-                                        change.consume()
-                                        triggerGestureDirection(dir)
+                                if (dt in 12L..135L && absDy >= 68f && absDy > absDx * 1.6f) {
+                                    val vyDpPerSec = (absDy * 1000f) / dt
+                                    if (vyDpPerSec >= 1450f) {
+                                        val dir = if (dyDp < 0f) GestureDirection.SWIPE_UP else GestureDirection.SWIPE_DOWN
+                                        if (isDirectionAssigned(dir)) {
+                                            firedInThisGesture = true
+                                            change.consume()
+                                            triggerGestureDirection(dir)
+                                        }
+                                    }
+                                } else if (!hasItemHorizontalSwipe && dt in 12L..240L && absDx >= 62f && absDx > absDy * 1.5f) {
+                                    val vxDpPerSec = (absDx * 1000f) / dt
+                                    if (vxDpPerSec >= 650f) {
+                                        val dir = if (dxDp < 0f) GestureDirection.SWIPE_LEFT else GestureDirection.SWIPE_RIGHT
+                                        if (isDirectionAssigned(dir)) {
+                                            firedInThisGesture = true
+                                            change.consume()
+                                            triggerGestureDirection(dir)
+                                        }
                                     }
                                 }
-                            } else if (dt in 12L..240L && absDx >= 62f && absDx > absDy * 1.5f) {
-                                val vxDpPerSec = (absDx * 1000f) / dt
-                                if (vxDpPerSec >= 650f) {
-                                    val dir = if (dxDp < 0f) GestureDirection.SWIPE_LEFT else GestureDirection.SWIPE_RIGHT
-                                    if (isDirectionAssigned(dir)) {
-                                        firedInThisGesture = true
-                                        change.consume()
-                                        triggerGestureDirection(dir)
-                                    }
-                                }
+                            } else {
+                                change.consume()
                             }
-                        } else {
-                            change.consume()
                         }
                     }
                 }
-            }
-    ) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            contentWindowInsets = WindowInsets(0, 0, 0, 0),
-            topBar = {
-                InventoryTopBar(
-                    searchQuery = uiState.searchQuery,
-                    selectedFilterIds = uiState.selectedFilterIds,
-                    filters = uiState.filters,
-                    filterPlacement = placement,
-                    animationSpeed = animSpeed,
-                    sortField = uiState.settings.sortField,
-                    sortDirection = uiState.settings.sortDirection,
-                    syncError = uiState.syncError,
-                    onSearchQueryChange = viewModel::onSearchQueryChange,
-                    onFilterSelected = viewModel::onFilterSelected,
-                    onSortFieldChange = viewModel::setSortField,
-                    onSortDirectionChange = viewModel::setSortDirection,
-                    onOpenSettings = { isSettingsSheetVisible = true }
-                )
-            },
-            bottomBar = {
-                if (placement == FilterPlacement.BOTTOM_BAR) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        tonalElevation = 4.dp
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .navigationBarsPadding()
-                                .padding(vertical = 8.dp)
+        ) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                topBar = {
+                    InventoryTopBar(
+                        searchQuery = uiState.searchQuery,
+                        selectedFilterIds = uiState.selectedFilterIds,
+                        filters = uiState.filters,
+                        filterPlacement = placement,
+                        animationSpeed = animSpeed,
+                        isHiddenByScroll = isTopBarHiddenByScroll,
+                        sortField = uiState.settings.sortField,
+                        sortDirection = uiState.settings.sortDirection,
+                        syncError = uiState.syncError,
+                        onSearchQueryChange = viewModel::onSearchQueryChange,
+                        onFilterSelected = viewModel::onFilterSelected,
+                        onSortFieldChange = viewModel::setSortField,
+                        onSortDirectionChange = viewModel::setSortDirection,
+                        onOpenSettings = { isSettingsSheetVisible = true }
+                    )
+                },
+                bottomBar = {
+                    if (placement == FilterPlacement.BOTTOM_BAR && !isTopBarHiddenByScroll) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            tonalElevation = 4.dp
                         ) {
-                            HorizontalFilterRow(
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .navigationBarsPadding()
+                                    .padding(vertical = 8.dp)
+                            ) {
+                                HorizontalFilterRow(
+                                    filters = uiState.filters,
+                                    selectedFilterIds = uiState.selectedFilterIds,
+                                    onFilterSelected = viewModel::onFilterSelected
+                                )
+                            }
+                        }
+                    }
+                },
+                floatingActionButton = {
+                    FloatingActionButton(
+                        onClick = {
+                            activeSheetItem = null
+                            editorOpenSessionCounter = SystemClock.uptimeMillis()
+                            isEditorSheetVisible = true
+                        },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = if (placement == FilterPlacement.BOTTOM_BAR && !isTopBarHiddenByScroll) {
+                            Modifier
+                        } else {
+                            Modifier.navigationBarsPadding()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Új tétel hozzáadása"
+                        )
+                    }
+                }
+            ) { innerPadding ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .nestedScroll(nestedScrollConnection)
+                ) {
+                    if (uiState.items.isEmpty() && !uiState.isLoading) {
+                        val onlyLowStockSelected = uiState.selectedFilterIds.size == 1 &&
+                            uiState.filters.firstOrNull { it.id in uiState.selectedFilterIds }?.isLowStockFilter == true
+                        EmptyInventoryState(
+                            isLowStockFilter = onlyLowStockSelected,
+                            hasSearchQuery = uiState.searchQuery.isNotBlank(),
+                            addItemGesture = addGesture,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        val toggleCategoryCollapse = { catName: String ->
+                            collapsedCategories = if (catName in collapsedCategories) {
+                                collapsedCategories - catName
+                            } else {
+                                collapsedCategories + catName
+                            }
+                        }
+
+                        when (layoutMode) {
+                            ItemLayoutMode.GRID_CARDS -> {
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(2),
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(
+                                        start = 12.dp,
+                                        end = 12.dp,
+                                        top = 8.dp,
+                                        bottom = 112.dp
+                                    ),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    if (uiState.settings.groupByCategory) {
+                                        groupedCategories.forEach { (categoryName, categoryItems) ->
+                                            val isCollapsed = categoryName in collapsedCategories
+                                            item(
+                                                key = "grid_category_header_$categoryName",
+                                                span = { GridItemSpan(maxLineSpan) },
+                                                contentType = "category_header"
+                                            ) {
+                                                CategoryGroupHeader(
+                                                    categoryName = categoryName,
+                                                    itemCount = categoryItems.size,
+                                                    isCollapsed = isCollapsed,
+                                                    onToggleCollapse = { toggleCategoryCollapse(categoryName) }
+                                                )
+                                            }
+                                            if (!isCollapsed) {
+                                                items(
+                                                    items = categoryItems,
+                                                    key = { it.id },
+                                                    contentType = { "inventory_grid_item" }
+                                                ) { item ->
+                                                    SwipeableItemContainer(
+                                                        item = item,
+                                                        rightAction = uiState.settings.itemSwipeRightAction,
+                                                        leftAction = uiState.settings.itemSwipeLeftAction,
+                                                        onExecuteAction = onExecuteItemSwipeAction
+                                                    ) {
+                                                        InventoryGridCard(
+                                                            item = item,
+                                                            hideUnopenedBadge = uiState.settings.hideUnopenedBadge,
+                                                            onIncrement = onIncrementItem,
+                                                            onDecrement = onDecrementItem,
+                                                            onToggleOpened = onToggleOpenedItem,
+                                                            onToggleFavorite = onToggleFavoriteItem,
+                                                            onEditRequest = onEditItem
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        items(
+                                            items = uiState.items,
+                                            key = { it.id },
+                                            contentType = { "inventory_grid_item" }
+                                        ) { item ->
+                                            SwipeableItemContainer(
+                                                item = item,
+                                                rightAction = uiState.settings.itemSwipeRightAction,
+                                                leftAction = uiState.settings.itemSwipeLeftAction,
+                                                onExecuteAction = onExecuteItemSwipeAction
+                                            ) {
+                                                InventoryGridCard(
+                                                    item = item,
+                                                    hideUnopenedBadge = uiState.settings.hideUnopenedBadge,
+                                                    onIncrement = onIncrementItem,
+                                                    onDecrement = onDecrementItem,
+                                                    onToggleOpened = onToggleOpenedItem,
+                                                    onToggleFavorite = onToggleFavoriteItem,
+                                                    onEditRequest = onEditItem
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            ItemLayoutMode.COMPACT -> {
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(
+                                        start = 14.dp,
+                                        end = 14.dp,
+                                        top = 8.dp,
+                                        bottom = 112.dp
+                                    ),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (uiState.settings.groupByCategory) {
+                                        groupedCategories.forEach { (categoryName, categoryItems) ->
+                                            val isCollapsed = categoryName in collapsedCategories
+                                            item(
+                                                key = "compact_category_header_$categoryName",
+                                                contentType = "category_header"
+                                            ) {
+                                                CategoryGroupHeader(
+                                                    categoryName = categoryName,
+                                                    itemCount = categoryItems.size,
+                                                    isCollapsed = isCollapsed,
+                                                    onToggleCollapse = { toggleCategoryCollapse(categoryName) }
+                                                )
+                                            }
+                                            if (!isCollapsed) {
+                                                items(
+                                                    items = categoryItems,
+                                                    key = { it.id },
+                                                    contentType = { "inventory_compact_item" }
+                                                ) { item ->
+                                                    SwipeableItemContainer(
+                                                        item = item,
+                                                        rightAction = uiState.settings.itemSwipeRightAction,
+                                                        leftAction = uiState.settings.itemSwipeLeftAction,
+                                                        onExecuteAction = onExecuteItemSwipeAction
+                                                    ) {
+                                                        InventoryCompactRow(
+                                                            item = item,
+                                                            hideUnopenedBadge = uiState.settings.hideUnopenedBadge,
+                                                            onIncrement = onIncrementItem,
+                                                            onDecrement = onDecrementItem,
+                                                            onToggleOpened = onToggleOpenedItem,
+                                                            onToggleFavorite = onToggleFavoriteItem,
+                                                            onEditRequest = onEditItem
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        items(
+                                            items = uiState.items,
+                                            key = { it.id },
+                                            contentType = { "inventory_compact_item" }
+                                        ) { item ->
+                                            SwipeableItemContainer(
+                                                item = item,
+                                                rightAction = uiState.settings.itemSwipeRightAction,
+                                                leftAction = uiState.settings.itemSwipeLeftAction,
+                                                onExecuteAction = onExecuteItemSwipeAction
+                                            ) {
+                                                InventoryCompactRow(
+                                                    item = item,
+                                                    hideUnopenedBadge = uiState.settings.hideUnopenedBadge,
+                                                    onIncrement = onIncrementItem,
+                                                    onDecrement = onDecrementItem,
+                                                    onToggleOpened = onToggleOpenedItem,
+                                                    onToggleFavorite = onToggleFavoriteItem,
+                                                    onEditRequest = onEditItem
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            ItemLayoutMode.LIST -> {
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(
+                                        start = 14.dp,
+                                        end = 14.dp,
+                                        top = 8.dp,
+                                        bottom = 112.dp
+                                    ),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    if (uiState.settings.groupByCategory) {
+                                        groupedCategories.forEach { (categoryName, categoryItems) ->
+                                            val isCollapsed = categoryName in collapsedCategories
+                                            item(
+                                                key = "category_header_$categoryName",
+                                                contentType = "category_header"
+                                            ) {
+                                                CategoryGroupHeader(
+                                                    categoryName = categoryName,
+                                                    itemCount = categoryItems.size,
+                                                    isCollapsed = isCollapsed,
+                                                    onToggleCollapse = { toggleCategoryCollapse(categoryName) }
+                                                )
+                                            }
+                                            if (!isCollapsed) {
+                                                items(
+                                                    items = categoryItems,
+                                                    key = { it.id },
+                                                    contentType = { "inventory_item" }
+                                                ) { item ->
+                                                    SwipeableItemContainer(
+                                                        item = item,
+                                                        rightAction = uiState.settings.itemSwipeRightAction,
+                                                        leftAction = uiState.settings.itemSwipeLeftAction,
+                                                        onExecuteAction = onExecuteItemSwipeAction
+                                                    ) {
+                                                        InventoryItemRow(
+                                                            item = item,
+                                                            hideUnopenedBadge = uiState.settings.hideUnopenedBadge,
+                                                            onIncrement = onIncrementItem,
+                                                            onDecrement = onDecrementItem,
+                                                            onToggleOpened = onToggleOpenedItem,
+                                                            onToggleFavorite = onToggleFavoriteItem,
+                                                            onEditRequest = onEditItem
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        items(
+                                            items = uiState.items,
+                                            key = { it.id },
+                                            contentType = { "inventory_item" }
+                                        ) { item ->
+                                            SwipeableItemContainer(
+                                                item = item,
+                                                rightAction = uiState.settings.itemSwipeRightAction,
+                                                leftAction = uiState.settings.itemSwipeLeftAction,
+                                                onExecuteAction = onExecuteItemSwipeAction
+                                            ) {
+                                                InventoryItemRow(
+                                                    item = item,
+                                                    hideUnopenedBadge = uiState.settings.hideUnopenedBadge,
+                                                    onIncrement = onIncrementItem,
+                                                    onDecrement = onDecrementItem,
+                                                    onToggleOpened = onToggleOpenedItem,
+                                                    onToggleFavorite = onToggleFavoriteItem,
+                                                    onEditRequest = onEditItem
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if ((placement == FilterPlacement.LEFT_EDGE || placement == FilterPlacement.RIGHT_EDGE) && isEdgeSidebarOpen) {
+                        val sidebarScrimInteraction = remember { MutableInteractionSource() }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.22f))
+                                .clickable(
+                                    interactionSource = sidebarScrimInteraction,
+                                    indication = null,
+                                    onClick = { isEdgeSidebarOpen = false }
+                                )
+                        )
+                    }
+
+                    if (placement == FilterPlacement.LEFT_EDGE) {
+                        Box(
+                            modifier = Modifier.fillMaxHeight(),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            CollapsibleEdgeSidebar(
+                                isLeft = true,
+                                isOpen = isEdgeSidebarOpen,
+                                animationSpeed = animSpeed,
                                 filters = uiState.filters,
                                 selectedFilterIds = uiState.selectedFilterIds,
+                                onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
                                 onFilterSelected = viewModel::onFilterSelected
                             )
                         }
                     }
-                }
-            },
-            floatingActionButton = {
-                FloatingActionButton(
-                    onClick = {
-                        activeSheetItem = null
-                        editorOpenSessionCounter = SystemClock.uptimeMillis()
-                        isEditorSheetVisible = true
-                    },
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = if (placement == FilterPlacement.BOTTOM_BAR) {
-                        Modifier
-                    } else {
-                        Modifier.navigationBarsPadding()
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Új tétel hozzáadása"
-                    )
-                }
-            }
-        ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .nestedScroll(nestedScrollConnection)
-            ) {
-                if (uiState.items.isEmpty() && !uiState.isLoading) {
-                    val onlyLowStockSelected = uiState.selectedFilterIds.size == 1 &&
-                        uiState.filters.firstOrNull { it.id in uiState.selectedFilterIds }?.isLowStockFilter == true
-                    EmptyInventoryState(
-                        isLowStockFilter = onlyLowStockSelected,
-                        hasSearchQuery = uiState.searchQuery.isNotBlank(),
-                        addItemGesture = addGesture,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    when (layoutMode) {
-                        ItemLayoutMode.GRID_CARDS -> {
-                            LazyVerticalGrid(
-                                columns = GridCells.Fixed(2),
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(
-                                    start = 12.dp,
-                                    end = 12.dp,
-                                    top = 8.dp,
-                                    bottom = 104.dp
-                                ),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                if (uiState.settings.groupByCategory) {
-                                    groupedCategories.forEach { (categoryName, categoryItems) ->
-                                        item(
-                                            key = "grid_category_header_$categoryName",
-                                            span = { GridItemSpan(maxLineSpan) },
-                                            contentType = "category_header"
-                                        ) {
-                                            CategoryGroupHeader(
-                                                categoryName = categoryName,
-                                                itemCount = categoryItems.size
-                                            )
-                                        }
-                                        items(
-                                            items = categoryItems,
-                                            key = { it.id },
-                                            contentType = { "inventory_grid_item" }
-                                        ) { item ->
-                                            InventoryGridCard(
-                                                item = item,
-                                                onIncrement = onIncrementItem,
-                                                onDecrement = onDecrementItem,
-                                                onToggleOpened = onToggleOpenedItem,
-                                                onEditRequest = onEditItem
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    items(
-                                        items = uiState.items,
-                                        key = { it.id },
-                                        contentType = { "inventory_grid_item" }
-                                    ) { item ->
-                                        InventoryGridCard(
-                                            item = item,
-                                            onIncrement = onIncrementItem,
-                                            onDecrement = onDecrementItem,
-                                            onToggleOpened = onToggleOpenedItem,
-                                            onEditRequest = onEditItem
-                                        )
-                                    }
-                                }
-                            }
-                        }
 
-                        ItemLayoutMode.COMPACT -> {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(
-                                    start = 14.dp,
-                                    end = 14.dp,
-                                    top = 8.dp,
-                                    bottom = 104.dp
-                                ),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                if (uiState.settings.groupByCategory) {
-                                    groupedCategories.forEach { (categoryName, categoryItems) ->
-                                        item(
-                                            key = "compact_category_header_$categoryName",
-                                            contentType = "category_header"
-                                        ) {
-                                            CategoryGroupHeader(
-                                                categoryName = categoryName,
-                                                itemCount = categoryItems.size
-                                            )
-                                        }
-                                        items(
-                                            items = categoryItems,
-                                            key = { it.id },
-                                            contentType = { "inventory_compact_item" }
-                                        ) { item ->
-                                            InventoryCompactRow(
-                                                item = item,
-                                                onIncrement = onIncrementItem,
-                                                onDecrement = onDecrementItem,
-                                                onToggleOpened = onToggleOpenedItem,
-                                                onEditRequest = onEditItem
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    items(
-                                        items = uiState.items,
-                                        key = { it.id },
-                                        contentType = { "inventory_compact_item" }
-                                    ) { item ->
-                                        InventoryCompactRow(
-                                            item = item,
-                                            onIncrement = onIncrementItem,
-                                            onDecrement = onDecrementItem,
-                                            onToggleOpened = onToggleOpenedItem,
-                                            onEditRequest = onEditItem
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        ItemLayoutMode.LIST -> {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(
-                                    start = 14.dp,
-                                    end = 14.dp,
-                                    top = 8.dp,
-                                    bottom = 104.dp
-                                ),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                if (uiState.settings.groupByCategory) {
-                                    groupedCategories.forEach { (categoryName, categoryItems) ->
-                                        item(
-                                            key = "category_header_$categoryName",
-                                            contentType = "category_header"
-                                        ) {
-                                            CategoryGroupHeader(
-                                                categoryName = categoryName,
-                                                itemCount = categoryItems.size
-                                            )
-                                        }
-                                        items(
-                                            items = categoryItems,
-                                            key = { it.id },
-                                            contentType = { "inventory_item" }
-                                        ) { item ->
-                                            InventoryItemRow(
-                                                item = item,
-                                                onIncrement = onIncrementItem,
-                                                onDecrement = onDecrementItem,
-                                                onToggleOpened = onToggleOpenedItem,
-                                                onEditRequest = onEditItem
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    items(
-                                        items = uiState.items,
-                                        key = { it.id },
-                                        contentType = { "inventory_item" }
-                                    ) { item ->
-                                        InventoryItemRow(
-                                            item = item,
-                                            onIncrement = onIncrementItem,
-                                            onDecrement = onDecrementItem,
-                                            onToggleOpened = onToggleOpenedItem,
-                                            onEditRequest = onEditItem
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if ((placement == FilterPlacement.LEFT_EDGE || placement == FilterPlacement.RIGHT_EDGE) && isEdgeSidebarOpen) {
-                    val sidebarScrimInteraction = remember { MutableInteractionSource() }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.22f))
-                            .clickable(
-                                interactionSource = sidebarScrimInteraction,
-                                indication = null,
-                                onClick = { isEdgeSidebarOpen = false }
+                    if (placement == FilterPlacement.RIGHT_EDGE) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.CenterEnd
+                        ) {
+                            CollapsibleEdgeSidebar(
+                                isLeft = false,
+                                isOpen = isEdgeSidebarOpen,
+                                animationSpeed = animSpeed,
+                                filters = uiState.filters,
+                                selectedFilterIds = uiState.selectedFilterIds,
+                                onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
+                                onFilterSelected = viewModel::onFilterSelected
                             )
+                        }
+                    }
+
+                    AnimatedVisibility(
+                        visible = undoBannerData != null,
+                        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(start = 16.dp, end = 88.dp, bottom = 16.dp)
+                    ) {
+                        val currentUndo = undoBannerData
+                        if (currentUndo != null) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.inverseSurface,
+                                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                                shape = RoundedCornerShape(14.dp),
+                                tonalElevation = 8.dp,
+                                shadowElevation = 6.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = currentUndo.message,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(
+                                        onClick = {
+                                            viewModel.restoreItem(currentUndo.itemSnapshot)
+                                            undoBannerData = null
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "Visszavonás",
+                                            color = MaterialTheme.colorScheme.inversePrimary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            AdaptiveBottomSheet(
+                visible = isEditorSheetVisible,
+                animationSpeed = animSpeed,
+                onDismiss = {
+                    isEditorSheetVisible = false
+                    activeSheetItem = null
+                }
+            ) {
+                ItemEditorSheetContent(
+                    initialItem = activeSheetItem,
+                    sessionSeed = editorOpenSessionCounter,
+                    allItems = uiState.allItems,
+                    productCategories = uiState.productCategories,
+                    settings = uiState.settings,
+                    onSelectExistingItem = { existingItem ->
+                        activeSheetItem = existingItem
+                    },
+                    onQuickIncrementExisting = { existingItem ->
+                        viewModel.incrementQuantity(existingItem)
+                        isEditorSheetVisible = false
+                        activeSheetItem = null
+                    },
+                    onSave = { id, name, category, quantity, unit, minQuantity, isOpened, isFavorite, note ->
+                        viewModel.saveItem(
+                            existingId = id,
+                            name = name,
+                            category = category,
+                            quantity = quantity,
+                            unit = unit,
+                            minQuantity = minQuantity,
+                            isOpened = isOpened,
+                            isFavorite = isFavorite,
+                            note = note
+                        )
+                        isEditorSheetVisible = false
+                        activeSheetItem = null
+                    },
+                    onDelete = { itemToDelete ->
+                        undoBannerData = UndoBannerData(
+                            itemSnapshot = itemToDelete,
+                            message = "„${itemToDelete.name}” törölve"
+                        )
+                        viewModel.deleteItem(itemToDelete.id)
+                        isEditorSheetVisible = false
+                        activeSheetItem = null
+                    }
+                )
+            }
+
+            AdaptiveBottomSheet(
+                visible = isSettingsSheetVisible,
+                animationSpeed = animSpeed,
+                onDismiss = { isSettingsSheetVisible = false }
+            ) {
+                SettingsSheetContent(
+                    settings = uiState.settings,
+                    filters = uiState.filters,
+                    onDismiss = { isSettingsSheetVisible = false },
+                    onThemeModeChange = viewModel::setThemeMode,
+                    onColorPaletteChange = viewModel::setColorPalette,
+                    onFilterPlacementChange = viewModel::setFilterPlacement,
+                    onAnimationSpeedChange = viewModel::setAnimationSpeed,
+                    onItemLayoutModeChange = viewModel::setItemLayoutMode,
+                    onUiScaleChange = viewModel::setUiScale,
+                    onHideUnopenedBadgeChange = viewModel::setHideUnopenedBadge,
+                    onAutoResetOpenedOnZeroChange = viewModel::setAutoResetOpenedOnZero,
+                    onAutoHideTopBarOnScrollChange = viewModel::setAutoHideTopBarOnScroll,
+                    onItemSwipeRightActionChange = viewModel::setItemSwipeRightAction,
+                    onItemSwipeLeftActionChange = viewModel::setItemSwipeLeftAction,
+                    onBackupFormatChange = viewModel::setBackupFormat,
+                    onExportBackupClick = {
+                        val ext = uiState.settings.backupFormat.extension
+                        exportLauncher.launch("keszletbarat_mentes.$ext")
+                    },
+                    onImportBackupClick = {
+                        importLauncher.launch(arrayOf("*/*"))
+                    },
+                    onAddItemGestureChange = viewModel::setAddItemGesture,
+                    onOpenSettingsGestureChange = viewModel::setOpenSettingsGesture,
+                    onGroupByCategoryChange = viewModel::setGroupByCategory,
+                    onMoveFilter = viewModel::moveFilterOrder,
+                    onAddFilter = viewModel::addFilter,
+                    onRenameFilter = viewModel::renameFilter,
+                    onDeleteFilter = viewModel::deleteFilter,
+                    onResetFilterOrder = viewModel::resetFilters,
+                    onDefaultMinQuantityChange = viewModel::setDefaultMinQuantity,
+                    onQuantityStepChange = viewModel::setQuantityStep,
+                    onFractionalOnlyForWeightAndVolumeChange = viewModel::setFractionalOnlyForWeightAndVolume
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SwipeableItemContainer(
+    item: InventoryItem,
+    rightAction: ItemSwipeAction,
+    leftAction: ItemSwipeAction,
+    onExecuteAction: (InventoryItem, ItemSwipeAction) -> Unit,
+    content: @Composable () -> Unit
+) {
+    if (rightAction == ItemSwipeAction.NONE && leftAction == ItemSwipeAction.NONE) {
+        content()
+        return
+    }
+
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current.density
+    val thresholdPx = 78f * density
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    val animatedOffsetX by animateFloatAsState(
+        targetValue = dragOffsetX,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "itemSwipeOffset"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(item.id, item.quantity, item.isOpened, rightAction, leftAction) {
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        if (dragOffsetX >= thresholdPx && rightAction != ItemSwipeAction.NONE) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onExecuteAction(item, rightAction)
+                        } else if (dragOffsetX <= -thresholdPx && leftAction != ItemSwipeAction.NONE) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onExecuteAction(item, leftAction)
+                        }
+                        dragOffsetX = 0f
+                    },
+                    onDragCancel = {
+                        dragOffsetX = 0f
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        val next = dragOffsetX + dragAmount
+                        val allowed = when {
+                            next > 0f && rightAction == ItemSwipeAction.NONE -> 0f
+                            next < 0f && leftAction == ItemSwipeAction.NONE -> 0f
+                            else -> next.coerceIn(-thresholdPx * 1.35f, thresholdPx * 1.35f)
+                        }
+                        if (allowed != 0f) {
+                            change.consume()
+                        }
+                        dragOffsetX = allowed
+                    }
+                )
+            }
+    ) {
+        if (abs(animatedOffsetX) > 8f) {
+            val isRight = animatedOffsetX > 0f
+            val activeAction = if (isRight) rightAction else leftAction
+            val bgColor = when (activeAction) {
+                ItemSwipeAction.ZERO_QUANTITY -> MaterialTheme.colorScheme.errorContainer
+                ItemSwipeAction.TOGGLE_OPENED -> MaterialTheme.colorScheme.primaryContainer
+                ItemSwipeAction.NONE -> Color.Transparent
+            }
+            val txtColor = when (activeAction) {
+                ItemSwipeAction.ZERO_QUANTITY -> MaterialTheme.colorScheme.onErrorContainer
+                ItemSwipeAction.TOGGLE_OPENED -> MaterialTheme.colorScheme.onPrimaryContainer
+                ItemSwipeAction.NONE -> Color.Transparent
+            }
+
+            Surface(
+                color = bgColor,
+                contentColor = txtColor,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.matchParentSize()
+            ) {
+                Box(
+                    contentAlignment = if (isRight) Alignment.CenterStart else Alignment.CenterEnd,
+                    modifier = Modifier.padding(horizontal = 18.dp)
+                ) {
+                    Text(
+                        text = activeAction.label,
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
-                }
-
-                if (placement == FilterPlacement.LEFT_EDGE) {
-                    Box(
-                        modifier = Modifier.fillMaxHeight(),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        CollapsibleEdgeSidebar(
-                            isLeft = true,
-                            isOpen = isEdgeSidebarOpen,
-                            animationSpeed = animSpeed,
-                            filters = uiState.filters,
-                            selectedFilterIds = uiState.selectedFilterIds,
-                            onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
-                            onFilterSelected = viewModel::onFilterSelected
-                        )
-                    }
-                }
-
-                if (placement == FilterPlacement.RIGHT_EDGE) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.CenterEnd
-                    ) {
-                        CollapsibleEdgeSidebar(
-                            isLeft = false,
-                            isOpen = isEdgeSidebarOpen,
-                            animationSpeed = animSpeed,
-                            filters = uiState.filters,
-                            selectedFilterIds = uiState.selectedFilterIds,
-                            onToggleOpen = { isEdgeSidebarOpen = !isEdgeSidebarOpen },
-                            onFilterSelected = viewModel::onFilterSelected
-                        )
-                    }
                 }
             }
         }
 
-        AdaptiveBottomSheet(
-            visible = isEditorSheetVisible,
-            animationSpeed = animSpeed,
-            onDismiss = {
-                isEditorSheetVisible = false
-                activeSheetItem = null
-            }
+        Box(
+            modifier = Modifier.offset { IntOffset(animatedOffsetX.roundToInt(), 0) }
         ) {
-            ItemEditorSheetContent(
-                initialItem = activeSheetItem,
-                sessionSeed = editorOpenSessionCounter,
-                allItems = uiState.allItems,
-                productCategories = uiState.productCategories,
-                settings = uiState.settings,
-                onSelectExistingItem = { existingItem ->
-                    activeSheetItem = existingItem
-                },
-                onQuickIncrementExisting = { existingItem ->
-                    viewModel.incrementQuantity(existingItem)
-                    isEditorSheetVisible = false
-                    activeSheetItem = null
-                },
-                onSave = { id, name, category, quantity, unit, minQuantity, isOpened, note ->
-                    viewModel.saveItem(
-                        existingId = id,
-                        name = name,
-                        category = category,
-                        quantity = quantity,
-                        unit = unit,
-                        minQuantity = minQuantity,
-                        isOpened = isOpened,
-                        note = note
-                    )
-                    isEditorSheetVisible = false
-                    activeSheetItem = null
-                },
-                onDelete = { id ->
-                    viewModel.deleteItem(id)
-                    isEditorSheetVisible = false
-                    activeSheetItem = null
-                }
-            )
-        }
-
-        AdaptiveBottomSheet(
-            visible = isSettingsSheetVisible,
-            animationSpeed = animSpeed,
-            onDismiss = { isSettingsSheetVisible = false }
-        ) {
-            SettingsSheetContent(
-                settings = uiState.settings,
-                filters = uiState.filters,
-                onDismiss = { isSettingsSheetVisible = false },
-                onThemeModeChange = viewModel::setThemeMode,
-                onColorPaletteChange = viewModel::setColorPalette,
-                onFilterPlacementChange = viewModel::setFilterPlacement,
-                onAnimationSpeedChange = viewModel::setAnimationSpeed,
-                onItemLayoutModeChange = viewModel::setItemLayoutMode,
-                onAddItemGestureChange = viewModel::setAddItemGesture,
-                onOpenSettingsGestureChange = viewModel::setOpenSettingsGesture,
-                onGroupByCategoryChange = viewModel::setGroupByCategory,
-                onMoveFilter = viewModel::moveFilterOrder,
-                onAddFilter = viewModel::addFilter,
-                onRenameFilter = viewModel::renameFilter,
-                onDeleteFilter = viewModel::deleteFilter,
-                onResetFilterOrder = viewModel::resetFilters,
-                onDefaultMinQuantityChange = viewModel::setDefaultMinQuantity,
-                onQuantityStepChange = viewModel::setQuantityStep,
-                onFractionalOnlyForWeightAndVolumeChange = viewModel::setFractionalOnlyForWeightAndVolume
-            )
+            content()
         }
     }
 }
@@ -705,30 +1108,57 @@ fun InventoryScreen(
 @Composable
 private fun CategoryGroupHeader(
     categoryName: String,
-    itemCount: Int
+    itemCount: Int,
+    isCollapsed: Boolean,
+    onToggleCollapse: () -> Unit
 ) {
-    Row(
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 6.dp, bottom = 2.dp, start = 4.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+            .padding(top = 4.dp, bottom = 2.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onToggleCollapse)
     ) {
-        Text(
-            text = categoryName,
-            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.primary
-        )
-        Surface(
-            color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            shape = RoundedCornerShape(10.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = "$itemCount db",
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = if (isCollapsed) {
+                        Icons.Default.KeyboardArrowDown
+                    } else {
+                        Icons.Default.KeyboardArrowUp
+                    },
+                    contentDescription = if (isCollapsed) "Kategória kinyitása" else "Kategória összecsukása",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = categoryName,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text(
+                    text = "$itemCount db",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
         }
     }
 }
@@ -928,6 +1358,7 @@ private fun InventoryTopBar(
     filters: List<FilterItem>,
     filterPlacement: FilterPlacement,
     animationSpeed: AnimationSpeed,
+    isHiddenByScroll: Boolean,
     sortField: SortField,
     sortDirection: SortDirection,
     syncError: String?,
@@ -955,354 +1386,365 @@ private fun InventoryTopBar(
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp
+        tonalElevation = if (isHiddenByScroll) 0.dp else 2.dp
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(top = 12.dp, bottom = 8.dp)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            AnimatedVisibility(
+                visible = !isHiddenByScroll,
+                enter = expandVertically(tween(200)) + fadeIn(tween(180)),
+                exit = shrinkVertically(tween(200)) + fadeOut(tween(150))
             ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = {
-                        Text(
-                            text = "Keresés a készletben...",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Keresés"
-                        )
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(
-                                    imageVector = Icons.Default.Clear,
-                                    contentDescription = "Törlés"
-                                )
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(28.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                    ),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Sentences,
-                        imeAction = ImeAction.Search
-                    )
-                )
-
-                if (filterPlacement == FilterPlacement.TOP_DROPDOWN) {
-                    Box {
-                        FilledTonalIconButton(
-                            onClick = { isFilterDropdownExpanded = true },
-                            modifier = Modifier.size(48.dp),
-                            shape = CircleShape,
-                            colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                containerColor = if (!isOnlyAllSelected) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerHigh
-                                },
-                                contentColor = if (!isOnlyAllSelected) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                }
-                            )
-                        ) {
-                            Icon(
-                                imageVector = AppIcons.FilterList,
-                                contentDescription = "Szűrők"
-                            )
-                        }
-
-                        DropdownMenu(
-                            expanded = isFilterDropdownExpanded,
-                            onDismissRequest = { isFilterDropdownExpanded = false }
-                        ) {
-                            filters.forEach { filter ->
-                                val isSelected = filter.id in selectedFilterIds
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = filter.label,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                        )
-                                    },
-                                    trailingIcon = if (isSelected) {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    } else null,
-                                    onClick = {
-                                        onFilterSelected(filter.id)
-                                        if (filter.isAllFilter) {
-                                            isFilterDropdownExpanded = false
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Box {
-                    FilledTonalIconButton(
-                        onClick = { isSortMenuExpanded = true },
-                        modifier = Modifier.size(48.dp),
-                        shape = CircleShape,
-                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.SwapVert,
-                            contentDescription = "Rendezés"
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = isSortMenuExpanded,
-                        onDismissRequest = { isSortMenuExpanded = false }
-                    ) {
-                        SortField.entries.forEach { field ->
-                            SortDirection.entries.forEach { direction ->
-                                val isCurrent = sortField == field && sortDirection == direction
-                                val optionLabel = if (field == SortField.OPENED) {
-                                    if (direction == SortDirection.ASC) {
-                                        "Bontott termékek elöl"
-                                    } else {
-                                        "Bontatlan termékek elöl"
-                                    }
-                                } else {
-                                    val arrow = if (direction == SortDirection.ASC) "↑" else "↓"
-                                    "${field.label} (${direction.label} $arrow)"
-                                }
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = optionLabel,
-                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
-                                        )
-                                    },
-                                    trailingIcon = if (isCurrent) {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    } else null,
-                                    onClick = {
-                                        onSortFieldChange(field)
-                                        onSortDirectionChange(direction)
-                                        isSortMenuExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                FilledTonalIconButton(
-                    onClick = onOpenSettings,
-                    modifier = Modifier.size(48.dp),
-                    shape = CircleShape,
-                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp, bottom = 8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "Beállítások"
-                    )
-                }
-            }
-
-            when (filterPlacement) {
-                FilterPlacement.TOP_BAR -> {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalFilterRow(
-                        filters = filters,
-                        selectedFilterIds = selectedFilterIds,
-                        onFilterSelected = onFilterSelected
-                    )
-                }
-                FilterPlacement.TOP_DROPDOWN -> {
-                    if (!isOnlyAllSelected) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "Szűrők: $selectedFiltersSummary",
-                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            TextButton(
-                                onClick = { onFilterSelected(FilterItem.ID_ALL) },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                modifier = Modifier.height(28.dp)
-                            ) {
-                                Text("Összes", style = MaterialTheme.typography.labelMedium)
-                            }
-                        }
-                    }
-                }
-                FilterPlacement.COLLAPSIBLE_PANEL -> {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        shape = RoundedCornerShape(14.dp),
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { isCollapsibleOpen = !isCollapsibleOpen }
-                                    .padding(vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    modifier = Modifier.weight(1f),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = onSearchQueryChange,
+                            modifier = Modifier.weight(1f),
+                            placeholder = {
+                                Text(
+                                    text = "Keresés a készletben...",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "Keresés"
+                                )
+                            },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { onSearchQueryChange("") }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "Törlés"
+                                        )
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(28.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                imeAction = ImeAction.Search
+                            )
+                        )
+
+                        if (filterPlacement == FilterPlacement.TOP_DROPDOWN) {
+                            Box {
+                                FilledTonalIconButton(
+                                    onClick = { isFilterDropdownExpanded = true },
+                                    modifier = Modifier.size(48.dp),
+                                    shape = CircleShape,
+                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = if (!isOnlyAllSelected) {
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceContainerHigh
+                                        },
+                                        contentColor = if (!isOnlyAllSelected) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
                                 ) {
                                     Icon(
                                         imageVector = AppIcons.FilterList,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                    Text(
-                                        text = "Szűrők: $selectedFiltersSummary",
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        contentDescription = "Szűrők"
                                     )
                                 }
+
+                                DropdownMenu(
+                                    expanded = isFilterDropdownExpanded,
+                                    onDismissRequest = { isFilterDropdownExpanded = false }
+                                ) {
+                                    filters.forEach { filter ->
+                                        val isSelected = filter.id in selectedFilterIds
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = filter.label,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                                )
+                                            },
+                                            trailingIcon = if (isSelected) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            } else null,
+                                            onClick = {
+                                                onFilterSelected(filter.id)
+                                                if (filter.isAllFilter) {
+                                                    isFilterDropdownExpanded = false
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Box {
+                            FilledTonalIconButton(
+                                onClick = { isSortMenuExpanded = true },
+                                modifier = Modifier.size(48.dp),
+                                shape = CircleShape,
+                                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            ) {
                                 Icon(
-                                    imageVector = if (isCollapsibleOpen) {
-                                        Icons.Default.KeyboardArrowUp
-                                    } else {
-                                        Icons.Default.KeyboardArrowDown
-                                    },
-                                    contentDescription = null
+                                    imageVector = AppIcons.SwapVert,
+                                    contentDescription = "Rendezés"
                                 )
                             }
 
-                            if (animationSpeed == AnimationSpeed.NONE) {
-                                if (isCollapsibleOpen) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    CompactChipFlowRow {
-                                        filters.forEach { filter ->
-                                            StableFilterChip(
-                                                filter = filter,
-                                                isSelected = filter.id in selectedFilterIds,
-                                                onClick = { onFilterSelected(filter.id) }
-                                            )
+                            DropdownMenu(
+                                expanded = isSortMenuExpanded,
+                                onDismissRequest = { isSortMenuExpanded = false }
+                            ) {
+                                SortField.entries.forEach { field ->
+                                    SortDirection.entries.forEach { direction ->
+                                        val isCurrent = sortField == field && sortDirection == direction
+                                        val optionLabel = if (field == SortField.OPENED) {
+                                            if (direction == SortDirection.ASC) {
+                                                "Bontott termékek elöl"
+                                            } else {
+                                                "Bontatlan termékek elöl"
+                                            }
+                                        } else {
+                                            val arrow = if (direction == SortDirection.ASC) "↑" else "↓"
+                                            "${field.label} (${direction.label} $arrow)"
                                         }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = optionLabel,
+                                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                                                )
+                                            },
+                                            trailingIcon = if (isCurrent) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            } else null,
+                                            onClick = {
+                                                onSortFieldChange(field)
+                                                onSortDirectionChange(direction)
+                                                isSortMenuExpanded = false
+                                            }
+                                        )
                                     }
                                 }
-                            } else {
-                                val enterTransition = if (animationSpeed == AnimationSpeed.BOUNCY) {
-                                    expandVertically(
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioLowBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        )
-                                    )
-                                } else {
-                                    expandVertically(tween(animationSpeed.durationMillis))
-                                }
-                                AnimatedVisibility(
-                                    visible = isCollapsibleOpen,
-                                    enter = enterTransition,
-                                    exit = shrinkVertically(tween(animationSpeed.durationMillis))
+                            }
+                        }
+
+                        FilledTonalIconButton(
+                            onClick = onOpenSettings,
+                            modifier = Modifier.size(48.dp),
+                            shape = CircleShape,
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Beállítások"
+                            )
+                        }
+                    }
+
+                    when (filterPlacement) {
+                        FilterPlacement.TOP_BAR -> {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            HorizontalFilterRow(
+                                filters = filters,
+                                selectedFilterIds = selectedFilterIds,
+                                onFilterSelected = onFilterSelected
+                            )
+                        }
+                        FilterPlacement.TOP_DROPDOWN -> {
+                            if (!isOnlyAllSelected) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Column {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        CompactChipFlowRow {
-                                            filters.forEach { filter ->
-                                                StableFilterChip(
-                                                    filter = filter,
-                                                    isSelected = filter.id in selectedFilterIds,
-                                                    onClick = { onFilterSelected(filter.id) }
+                                    Text(
+                                        text = "Szűrők: $selectedFiltersSummary",
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    TextButton(
+                                        onClick = { onFilterSelected(FilterItem.ID_ALL) },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(28.dp)
+                                    ) {
+                                        Text("Összes", style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                            }
+                        }
+                        FilterPlacement.COLLAPSIBLE_PANEL -> {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { isCollapsibleOpen = !isCollapsibleOpen }
+                                            .padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = AppIcons.FilterList,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                            Text(
+                                                text = "Szűrők: $selectedFiltersSummary",
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Icon(
+                                            imageVector = if (isCollapsibleOpen) {
+                                                Icons.Default.KeyboardArrowUp
+                                            } else {
+                                                Icons.Default.KeyboardArrowDown
+                                            },
+                                            contentDescription = null
+                                        )
+                                    }
+
+                                    if (animationSpeed == AnimationSpeed.NONE) {
+                                        if (isCollapsibleOpen) {
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            CompactChipFlowRow {
+                                                filters.forEach { filter ->
+                                                    StableFilterChip(
+                                                        filter = filter,
+                                                        isSelected = filter.id in selectedFilterIds,
+                                                        onClick = { onFilterSelected(filter.id) }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        val enterTransition = if (animationSpeed == AnimationSpeed.BOUNCY) {
+                                            expandVertically(
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioLowBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
                                                 )
+                                            )
+                                        } else {
+                                            expandVertically(tween(animationSpeed.durationMillis))
+                                        }
+                                        AnimatedVisibility(
+                                            visible = isCollapsibleOpen,
+                                            enter = enterTransition,
+                                            exit = shrinkVertically(tween(animationSpeed.durationMillis))
+                                        ) {
+                                            Column {
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                CompactChipFlowRow {
+                                                    filters.forEach { filter ->
+                                                        StableFilterChip(
+                                                            filter = filter,
+                                                            isSelected = filter.id in selectedFilterIds,
+                                                            onClick = { onFilterSelected(filter.id) }
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
+                        else -> {}
                     }
-                }
-                else -> {}
-            }
 
-            if (syncError != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = syncError,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                    if (syncError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = syncError,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1620,13 +2062,37 @@ private fun StableFilterChip(
     }
 }
 
+@Composable
+private fun FavoriteStarButton(
+    isFavorite: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Icon(
+        imageVector = if (isFavorite) Icons.Default.Star else AppIcons.StarOutline,
+        contentDescription = if (isFavorite) "Kedvenc eltávolítása" else "Megjelölés kedvencként",
+        tint = if (isFavorite) {
+            Color(0xFFF5B400)
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+        },
+        modifier = modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .padding(2.dp)
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun InventoryItemRow(
     item: InventoryItem,
+    hideUnopenedBadge: Boolean,
     onIncrement: (InventoryItem) -> Unit,
     onDecrement: (InventoryItem) -> Unit,
     onToggleOpened: (InventoryItem) -> Unit,
+    onToggleFavorite: (InventoryItem) -> Unit,
     onEditRequest: (InventoryItem) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -1644,6 +2110,8 @@ private fun InventoryItemRow(
         isLowStock -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
         else -> Color.Transparent
     }
+
+    val showOpenedBadge = item.isOpened || !hideUnopenedBadge
 
     Card(
         modifier = Modifier
@@ -1672,17 +2140,31 @@ private fun InventoryItemRow(
                     .weight(1f)
                     .padding(end = 10.dp)
             ) {
-                Text(
-                    text = item.name,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        textDecoration = if (isOutOfStock) TextDecoration.LineThrough else TextDecoration.None
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FavoriteStarButton(
+                        isFavorite = item.isFavorite,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onToggleFavorite(item)
+                        }
+                    )
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            textDecoration = if (isOutOfStock) TextDecoration.LineThrough else TextDecoration.None
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .alpha(if (isOutOfStock) 0.58f else 1f)
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(2.dp))
 
@@ -1695,33 +2177,36 @@ private fun InventoryItemRow(
                     modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
                 )
 
-                Spacer(modifier = Modifier.height(5.dp))
-
-                Row(
-                    modifier = Modifier.height(22.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OpenedStatusBadge(
-                        isOpened = item.isOpened,
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onToggleOpened(item)
+                if (showOpenedBadge || isOutOfStock || isLowStock) {
+                    Spacer(modifier = Modifier.height(5.dp))
+                    Row(
+                        modifier = Modifier.height(22.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (showOpenedBadge) {
+                            OpenedStatusBadge(
+                                isOpened = item.isOpened,
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onToggleOpened(item)
+                                }
+                            )
                         }
-                    )
 
-                    if (isOutOfStock) {
-                        StatusBadge(
-                            text = "Elfogyott",
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError
-                        )
-                    } else if (isLowStock) {
-                        StatusBadge(
-                            text = "Kifogyóban",
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
+                        if (isOutOfStock) {
+                            StatusBadge(
+                                text = "Elfogyott",
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            )
+                        } else if (isLowStock) {
+                            StatusBadge(
+                                text = "Kifogyóban",
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        }
                     }
                 }
 
@@ -1801,9 +2286,11 @@ private fun InventoryItemRow(
 @Composable
 private fun InventoryGridCard(
     item: InventoryItem,
+    hideUnopenedBadge: Boolean,
     onIncrement: (InventoryItem) -> Unit,
     onDecrement: (InventoryItem) -> Unit,
     onToggleOpened: (InventoryItem) -> Unit,
+    onToggleFavorite: (InventoryItem) -> Unit,
     onEditRequest: (InventoryItem) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -1821,6 +2308,8 @@ private fun InventoryGridCard(
         isLowStock -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
         else -> Color.Transparent
     }
+
+    val showOpenedBadge = item.isOpened || !hideUnopenedBadge
 
     Card(
         modifier = Modifier
@@ -1843,17 +2332,31 @@ private fun InventoryGridCard(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(
-                text = item.name,
-                style = MaterialTheme.typography.titleSmall.copy(
-                    fontWeight = FontWeight.Bold,
-                    textDecoration = if (isOutOfStock) TextDecoration.LineThrough else TextDecoration.None
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                FavoriteStarButton(
+                    isFavorite = item.isFavorite,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onToggleFavorite(item)
+                    }
+                )
+                Text(
+                    text = item.name,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        textDecoration = if (isOutOfStock) TextDecoration.LineThrough else TextDecoration.None
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .alpha(if (isOutOfStock) 0.58f else 1f)
+                )
+            }
 
             Text(
                 text = "${item.category} • ${item.unit}",
@@ -1864,31 +2367,35 @@ private fun InventoryGridCard(
                 modifier = Modifier.alpha(if (isOutOfStock) 0.58f else 1f)
             )
 
-            Row(
-                modifier = Modifier.height(22.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                OpenedStatusBadge(
-                    isOpened = item.isOpened,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onToggleOpened(item)
+            if (showOpenedBadge || isOutOfStock || isLowStock) {
+                Row(
+                    modifier = Modifier.height(22.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    if (showOpenedBadge) {
+                        OpenedStatusBadge(
+                            isOpened = item.isOpened,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onToggleOpened(item)
+                            }
+                        )
                     }
-                )
 
-                if (isOutOfStock) {
-                    StatusBadge(
-                        text = "Elfogyott",
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError
-                    )
-                } else if (isLowStock) {
-                    StatusBadge(
-                        text = "Kifogyóban",
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
+                    if (isOutOfStock) {
+                        StatusBadge(
+                            text = "Elfogyott",
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    } else if (isLowStock) {
+                        StatusBadge(
+                            text = "Kifogyóban",
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
                 }
             }
 
@@ -1973,9 +2480,11 @@ private fun InventoryGridCard(
 @Composable
 private fun InventoryCompactRow(
     item: InventoryItem,
+    hideUnopenedBadge: Boolean,
     onIncrement: (InventoryItem) -> Unit,
     onDecrement: (InventoryItem) -> Unit,
     onToggleOpened: (InventoryItem) -> Unit,
+    onToggleFavorite: (InventoryItem) -> Unit,
     onEditRequest: (InventoryItem) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -1993,6 +2502,8 @@ private fun InventoryCompactRow(
         isLowStock -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
         else -> Color.Transparent
     }
+
+    val showOpenedBadge = item.isOpened || !hideUnopenedBadge
 
     Card(
         modifier = Modifier
@@ -2024,8 +2535,15 @@ private fun InventoryCompactRow(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
+                    FavoriteStarButton(
+                        isFavorite = item.isFavorite,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onToggleFavorite(item)
+                        }
+                    )
                     Text(
                         text = item.name,
                         style = MaterialTheme.typography.bodyLarge.copy(
@@ -2047,31 +2565,35 @@ private fun InventoryCompactRow(
                     )
                 }
 
-                Row(
-                    modifier = Modifier.height(20.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OpenedStatusBadge(
-                        isOpened = item.isOpened,
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onToggleOpened(item)
+                if (showOpenedBadge || isOutOfStock || isLowStock) {
+                    Row(
+                        modifier = Modifier.height(20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (showOpenedBadge) {
+                            OpenedStatusBadge(
+                                isOpened = item.isOpened,
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onToggleOpened(item)
+                                }
+                            )
                         }
-                    )
 
-                    if (isOutOfStock) {
-                        StatusBadge(
-                            text = "Elfogyott",
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError
-                        )
-                    } else if (isLowStock) {
-                        StatusBadge(
-                            text = "Kifogyóban",
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
+                        if (isOutOfStock) {
+                            StatusBadge(
+                                text = "Elfogyott",
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            )
+                        } else if (isLowStock) {
+                            StatusBadge(
+                                text = "Kifogyóban",
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        }
                     }
                 }
             }
@@ -2288,9 +2810,10 @@ private fun ItemEditorSheetContent(
         unit: String,
         minQuantity: Double,
         isOpened: Boolean,
+        isFavorite: Boolean,
         note: String
     ) -> Unit,
-    onDelete: (String) -> Unit
+    onDelete: (InventoryItem) -> Unit
 ) {
     val selectableCategories = remember(productCategories) {
         productCategories.filterNot {
@@ -2321,6 +2844,9 @@ private fun ItemEditorSheetContent(
     }
     var isOpened by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableStateOf(initialItem?.isOpened ?: false)
+    }
+    var isFavorite by rememberSaveable(initialItem?.id, sessionSeed) {
+        mutableStateOf(initialItem?.isFavorite ?: false)
     }
     var note by rememberSaveable(initialItem?.id, sessionSeed) {
         mutableStateOf(initialItem?.note ?: "")
@@ -2395,7 +2921,7 @@ private fun ItemEditorSheetContent(
 
             if (initialItem != null) {
                 OutlinedButton(
-                    onClick = { onDelete(initialItem.id) },
+                    onClick = { onDelete(initialItem) },
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     ),
@@ -2534,34 +3060,69 @@ private fun ItemEditorSheetContent(
             }
         }
 
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
+            Surface(
+                color = if (isOpened) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                contentColor = if (isOpened) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
                     .clickable { isOpened = !isOpened }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
                     Text(
-                        text = "Megbontott termék (Bontott jelvény)",
+                        text = "Bontott",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Text(
-                        text = "Jelöld be, ha a csomagolás már fel van bontva",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Switch(
+                        checked = isOpened,
+                        onCheckedChange = { isOpened = it }
                     )
                 }
-                Switch(
-                    checked = isOpened,
-                    onCheckedChange = { isOpened = it }
-                )
+            }
+
+            Surface(
+                color = if (isFavorite) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                contentColor = if (isFavorite) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { isFavorite = !isFavorite }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Default.Star else AppIcons.StarOutline,
+                            contentDescription = null,
+                            tint = if (isFavorite) Color(0xFFF5B400) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Kedvenc",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                    Switch(
+                        checked = isFavorite,
+                        onCheckedChange = { isFavorite = it }
+                    )
+                }
             }
         }
 
@@ -2716,6 +3277,7 @@ private fun ItemEditorSheetContent(
                     selectedUnit,
                     minQuantity,
                     isOpened,
+                    isFavorite,
                     note
                 )
             },
@@ -2744,6 +3306,15 @@ private fun SettingsSheetContent(
     onFilterPlacementChange: (FilterPlacement) -> Unit,
     onAnimationSpeedChange: (AnimationSpeed) -> Unit,
     onItemLayoutModeChange: (ItemLayoutMode) -> Unit,
+    onUiScaleChange: (UiScale) -> Unit,
+    onHideUnopenedBadgeChange: (Boolean) -> Unit,
+    onAutoResetOpenedOnZeroChange: (Boolean) -> Unit,
+    onAutoHideTopBarOnScrollChange: (Boolean) -> Unit,
+    onItemSwipeRightActionChange: (ItemSwipeAction) -> Unit,
+    onItemSwipeLeftActionChange: (ItemSwipeAction) -> Unit,
+    onBackupFormatChange: (BackupFormat) -> Unit,
+    onExportBackupClick: () -> Unit,
+    onImportBackupClick: () -> Unit,
     onAddItemGestureChange: (GestureDirection) -> Unit,
     onOpenSettingsGestureChange: (GestureDirection) -> Unit,
     onGroupByCategoryChange: (Boolean) -> Unit,
@@ -2757,9 +3328,12 @@ private fun SettingsSheetContent(
     onFractionalOnlyForWeightAndVolumeChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     var newFilterName by rememberSaveable { mutableStateOf("") }
     var filterBeingRenamed by remember { mutableStateOf<FilterItem?>(null) }
     var renameText by remember { mutableStateOf("") }
+
+    val activeTab = SettingsTab.entries.getOrElse(selectedTabIndex) { SettingsTab.APPEARANCE }
 
     if (filterBeingRenamed != null) {
         AlertDialog(
@@ -2808,535 +3382,701 @@ private fun SettingsSheetContent(
             .imePadding()
             .padding(horizontal = 20.dp)
             .padding(bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text(
             text = "Beállítások",
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
         )
 
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                text = "Megjelenés módja",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    ThemeMode.entries.forEach { mode ->
-                        val isSelected = settings.themeMode == mode
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { onThemeModeChange(mode) },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(34.dp),
-                            label = {
-                                Text(
-                                    text = mode.label,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textAlign = TextAlign.Center,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            },
-                            border = FilterChipDefaults.filterChipBorder(
-                                enabled = true,
-                                selected = isSelected,
-                                borderWidth = 1.dp,
-                                selectedBorderWidth = 1.dp,
-                                borderColor = MaterialTheme.colorScheme.outlineVariant,
-                                selectedBorderColor = Color.Transparent
-                            )
-                        )
-                    }
-                }
+        CompactChipFlowRow {
+            SettingsTab.entries.forEachIndexed { idx, tab ->
+                CompactFilterChip(
+                    selected = selectedTabIndex == idx,
+                    onClick = { selectedTabIndex = idx },
+                    label = tab.label
+                )
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                text = "Színpaletta",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-            CompactChipFlowRow {
-                AppColorPalette.entries.forEach { palette ->
-                    CompactFilterChip(
-                        selected = settings.colorPalette == palette,
-                        onClick = { onColorPaletteChange(palette) },
-                        label = palette.label,
-                        leadingIcon = {
-                            Box(
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(palette.previewHex))
-                                    .border(
-                                        width = 1.dp,
-                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                                        shape = CircleShape
+        HorizontalDivider()
+
+        when (activeTab) {
+            SettingsTab.APPEARANCE -> {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Megjelenés módja",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                ThemeMode.entries.forEach { mode ->
+                                    val isSelected = settings.themeMode == mode
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { onThemeModeChange(mode) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(34.dp),
+                                        label = {
+                                            Text(
+                                                text = mode.label,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                textAlign = TextAlign.Center,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        },
+                                        border = FilterChipDefaults.filterChipBorder(
+                                            enabled = true,
+                                            selected = isSelected,
+                                            borderWidth = 1.dp,
+                                            selectedBorderWidth = 1.dp,
+                                            borderColor = MaterialTheme.colorScheme.outlineVariant,
+                                            selectedBorderColor = Color.Transparent
+                                        )
                                     )
+                                }
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Színpaletta",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            AppColorPalette.entries.forEach { palette ->
+                                CompactFilterChip(
+                                    selected = settings.colorPalette == palette,
+                                    onClick = { onColorPaletteChange(palette) },
+                                    label = palette.label,
+                                    leadingIcon = {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(palette.previewHex))
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                                                    shape = CircleShape
+                                                )
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Betűméret és kártyaméret skálázás",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            UiScale.entries.forEach { scale ->
+                                CompactFilterChip(
+                                    selected = settings.uiScale == scale,
+                                    onClick = { onUiScaleChange(scale) },
+                                    label = scale.label
+                                )
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Felsorolás formátuma",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            ItemLayoutMode.entries.forEach { mode ->
+                                CompactFilterChip(
+                                    selected = settings.itemLayoutMode == mode,
+                                    onClick = { onItemLayoutModeChange(mode) },
+                                    label = mode.label
+                                )
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Animáció stílusa",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            AnimationSpeed.entries.forEach { speed ->
+                                CompactFilterChip(
+                                    selected = settings.animationSpeed == speed,
+                                    onClick = { onAnimationSpeedChange(speed) },
+                                    label = speed.label
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = "„Bontatlan” címke elrejtése a kártyákon",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                            )
+                            Text(
+                                text = "Ha be van kapcsolva, csak a megbontott termékeken jelenik meg a „Bontott” jelvény",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                    )
-                }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                text = "Animáció stílusa",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-            CompactChipFlowRow {
-                AnimationSpeed.entries.forEach { speed ->
-                    CompactFilterChip(
-                        selected = settings.animationSpeed == speed,
-                        onClick = { onAnimationSpeedChange(speed) },
-                        label = speed.label
-                    )
-                }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                text = "Szűrők elhelyezkedése",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-            CompactChipFlowRow {
-                FilterPlacement.entries.forEach { placement ->
-                    CompactFilterChip(
-                        selected = settings.filterPlacement == placement,
-                        onClick = { onFilterPlacementChange(placement) },
-                        label = placement.label
-                    )
-                }
-            }
-        }
-
-        HorizontalDivider()
-
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(
-                text = "Nézet és gyorsgesztusok",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "Felsorolás formátuma",
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                )
-                CompactChipFlowRow {
-                    ItemLayoutMode.entries.forEach { mode ->
-                        CompactFilterChip(
-                            selected = settings.itemLayoutMode == mode,
-                            onClick = { onItemLayoutModeChange(mode) },
-                            label = mode.label
+                        Switch(
+                            checked = settings.hideUnopenedBadge,
+                            onCheckedChange = onHideUnopenedBadgeChange
                         )
                     }
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text(
-                        text = "Csoportosítás kategória szerint",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                    )
-                    Text(
-                        text = "A készletlistában kategóriánként külön fejléc alatt jelennek meg a termékek",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = settings.groupByCategory,
-                    onCheckedChange = onGroupByCategoryChange
-                )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "Új termék felvétele gyors húzással",
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                )
-                Text(
-                    text = "Bárhol a főképernyőn egy gyors, határozott rántással megnyithatod (normál görgetésnél nem aktiválódik):",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                CompactChipFlowRow {
-                    GestureDirection.entries.forEach { direction ->
-                        CompactFilterChip(
-                            selected = settings.addItemGesture == direction,
-                            onClick = { onAddItemGestureChange(direction) },
-                            label = direction.label
-                        )
-                    }
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "Beállítások megnyitása gyors húzással",
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                )
-                Text(
-                    text = "Bárhol a főképernyőn egy gyors, határozott rántással megnyithatod a beállításokat:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                CompactChipFlowRow {
-                    GestureDirection.entries.forEach { direction ->
-                        CompactFilterChip(
-                            selected = settings.openSettingsGesture == direction,
-                            onClick = { onOpenSettingsGestureChange(direction) },
-                            label = direction.label
-                        )
-                    }
-                }
-            }
-        }
-
-        HorizontalDivider()
-
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                text = "Kezdőképernyő Widgetek",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-            Text(
-                text = "A KészletBarát két natív widgetet kínál, amelyeket közvetlenül a telefonod főképernyőjére tűzhetsz ki (vagy a főképernyőn hosszan nyomva a Widgetek menüből is hozzáadhatod őket):",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "1. Kell venni (Kifogyóban) lista widget",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "Megjeleníti a főképernyőn az elfogyott és kifogyóban lévő tételek számát, valamint a legfontosabb beszerzendő termékeket.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    FilledTonalButton(
-                        onClick = {
-                            val pinned = KeszletWidgetManager.requestPinLowStockWidget(context)
-                            if (!pinned) {
-                                Toast.makeText(
-                                    context,
-                                    "A főképernyőn hosszan nyomva a Widgetek között tudod hozzáadni!",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
+            SettingsTab.BEHAVIOR -> {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = "Csoportosítás kategória szerint",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                            )
+                            Text(
+                                text = "A termékek összecsukható kategória-fejlécek alatt jelennek meg",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = settings.groupByCategory,
+                            onCheckedChange = onGroupByCategoryChange
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Kell venni widget kitűzése a főképernyőre")
                     }
-                }
-            }
 
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "2. Gyorsgombok widget",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "Kompakt sáv a főképernyőre, amellyel egyetlen érintéssel megnyithatod az Új termék felvételét vagy a Kell venni listát.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    FilledTonalButton(
-                        onClick = {
-                            val pinned = KeszletWidgetManager.requestPinQuickActionWidget(context)
-                            if (!pinned) {
-                                Toast.makeText(
-                                    context,
-                                    "A főképernyőn hosszan nyomva a Widgetek között tudod hozzáadni!",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = "Keresősáv és szűrők elrejtése görgetéskor",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                            )
+                            Text(
+                                text = "Lefelé görgetéskor automatikusan becsukódik a felső sáv, felfelé görgetve visszanyílik",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = settings.autoHideTopBarOnScroll,
+                            onCheckedChange = onAutoHideTopBarOnScrollChange
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Gyorsgombok widget kitűzése a főképernyőre")
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = "Automatikus „Bontatlan”-ra állítás 0 mennyiségnél",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                            )
+                            Text(
+                                text = "Ha egy bontott termék elfogy (0-ra csökken), automatikusan visszaáll Bontatlanra",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = settings.autoResetOpenedOnZero,
+                            onCheckedChange = onAutoResetOpenedOnZeroChange
+                        )
+                    }
+
+                    HorizontalDivider()
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Listaelem jobbra húzása (Swipe →)",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            ItemSwipeAction.entries.forEach { action ->
+                                CompactFilterChip(
+                                    selected = settings.itemSwipeRightAction == action,
+                                    onClick = { onItemSwipeRightActionChange(action) },
+                                    label = action.label
+                                )
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Listaelem balra húzása (← Swipe)",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            ItemSwipeAction.entries.forEach { action ->
+                                CompactFilterChip(
+                                    selected = settings.itemSwipeLeftAction == action,
+                                    onClick = { onItemSwipeLeftActionChange(action) },
+                                    label = action.label
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Új termék felvétele gyors rántással",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            GestureDirection.entries.forEach { direction ->
+                                CompactFilterChip(
+                                    selected = settings.addItemGesture == direction,
+                                    onClick = { onAddItemGestureChange(direction) },
+                                    label = direction.label
+                                )
+                            }
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Beállítások megnyitása gyors rántással",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            GestureDirection.entries.forEach { direction ->
+                                CompactFilterChip(
+                                    selected = settings.openSettingsGesture == direction,
+                                    onClick = { onOpenSettingsGestureChange(direction) },
+                                    label = direction.label
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Mennyiség lépésköze",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        CompactChipFlowRow {
+                            AppSettings.availableSteps.forEach { step ->
+                                CompactFilterChip(
+                                    selected = settings.quantityStep == step,
+                                    onClick = { onQuantityStepChange(step) },
+                                    label = step.formatQuantity()
+                                )
+                            }
+                        }
+
+                        if (settings.quantityStep < 1.0) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                    Text(
+                                        text = "Tört lépésköz csak kg és liter esetén",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                    )
+                                    Text(
+                                        text = "db és csomag esetén továbbra is 1-gyel léptet",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = settings.fractionalOnlyForWeightAndVolume,
+                                    onCheckedChange = onFractionalOnlyForWeightAndVolumeChange
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(
+                                text = "Alapértelmezett minimum küszöbérték",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = "Új termék felvételekor ez az érték lesz előre beírva",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilledTonalIconButton(
+                                onClick = {
+                                    onDefaultMinQuantityChange(
+                                        (settings.defaultMinQuantity - settings.quantityStep).coerceAtLeast(0.0)
+                                    )
+                                },
+                                enabled = settings.defaultMinQuantity > 0.0,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(AppIcons.Remove, contentDescription = "Csökkentés")
+                            }
+                            Text(
+                                text = settings.defaultMinQuantity.formatQuantity(),
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                modifier = Modifier.width(48.dp),
+                                textAlign = TextAlign.Center
+                            )
+                            FilledTonalIconButton(
+                                onClick = {
+                                    onDefaultMinQuantityChange(settings.defaultMinQuantity + settings.quantityStep)
+                                },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Növelés")
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        HorizontalDivider()
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Mennyiség lépésköze",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-            Text(
-                text = "Meghatározza, hogy a + és - gombok milyen értékkel növeljék vagy csökkentsék a mennyiséget.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            CompactChipFlowRow {
-                AppSettings.availableSteps.forEach { step ->
-                    CompactFilterChip(
-                        selected = settings.quantityStep == step,
-                        onClick = { onQuantityStepChange(step) },
-                        label = step.formatQuantity()
-                    )
-                }
-            }
-
-            if (settings.quantityStep < 1.0) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            SettingsTab.CATEGORIES -> {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Tört lépésköz csak kg és liter esetén",
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                            text = "Szűrők elhelyezkedése",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                         )
-                        Text(
-                            text = "Ha be van kapcsolva, db és csomag esetén továbbra is 1-gyel léptet",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        CompactChipFlowRow {
+                            FilterPlacement.entries.forEach { placement ->
+                                CompactFilterChip(
+                                    selected = settings.filterPlacement == placement,
+                                    onClick = { onFilterPlacementChange(placement) },
+                                    label = placement.label
+                                )
+                            }
+                        }
                     }
-                    Switch(
-                        checked = settings.fractionalOnlyForWeightAndVolume,
-                        onCheckedChange = onFractionalOnlyForWeightAndVolumeChange
-                    )
-                }
-            }
-        }
 
-        HorizontalDivider()
+                    HorizontalDivider()
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(
-                    text = "Alapértelmezett minimum küszöbérték",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-                )
-                Text(
-                    text = "Új termék felvételekor ez az érték lesz előre beírva.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Szűrők és kategóriák",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = "Minden eszközön szinkronizálódik. Törölt kategória termékei az Egyéb alá kerülnek.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = onResetFilterOrder) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Alaphelyzet")
+                        }
+                    }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilledTonalIconButton(
-                    onClick = {
-                        onDefaultMinQuantityChange(
-                            (settings.defaultMinQuantity - settings.quantityStep).coerceAtLeast(0.0)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = newFilterName,
+                            onValueChange = { newFilterName = it },
+                            placeholder = { Text("Új szűrő / kategória neve...") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp),
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                imeAction = ImeAction.Done
+                            )
                         )
-                    },
-                    enabled = settings.defaultMinQuantity > 0.0,
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(AppIcons.Remove, contentDescription = "Csökkentés")
-                }
-                Text(
-                    text = settings.defaultMinQuantity.formatQuantity(),
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    modifier = Modifier.width(48.dp),
-                    textAlign = TextAlign.Center
-                )
-                FilledTonalIconButton(
-                    onClick = {
-                        onDefaultMinQuantityChange(settings.defaultMinQuantity + settings.quantityStep)
-                    },
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Növelés")
+                        FilledIconButton(
+                            onClick = {
+                                if (newFilterName.isNotBlank()) {
+                                    onAddFilter(newFilterName)
+                                    newFilterName = ""
+                                }
+                            },
+                            enabled = newFilterName.isNotBlank(),
+                            modifier = Modifier.size(48.dp),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Szűrő hozzáadása"
+                            )
+                        }
+                    }
+
+                    filters.forEachIndexed { index, filter ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "${index + 1}. ${filter.label}",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(
+                                        onClick = { onMoveFilter(filter.id, -1) },
+                                        enabled = index > 0,
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowUp,
+                                            contentDescription = "Mozgatás fel"
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { onMoveFilter(filter.id, 1) },
+                                        enabled = index < filters.lastIndex,
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Mozgatás le"
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            renameText = filter.label
+                                            filterBeingRenamed = filter
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = "Átnevezés",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    if (filter.isDeletable) {
+                                        IconButton(
+                                            onClick = { onDeleteFilter(filter.id) },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Törlés",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    } else {
+                                        Spacer(modifier = Modifier.width(36.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        HorizontalDivider()
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+            SettingsTab.BACKUP_EXTRAS -> {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
-                        text = "Szűrők és kategóriák",
+                        text = "Kezdőképernyő Widgetek",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Minden eszközön szinkronizálódik. Törölt kategória termékei az Egyéb alá kerülnek.",
+                        text = "Tűzd ki a KészletBarát widgeteket közvetlenül a telefonod főképernyőjére:",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-                TextButton(onClick = onResetFilterOrder) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Alaphelyzet")
-                }
-            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = newFilterName,
-                    onValueChange = { newFilterName = it },
-                    placeholder = { Text("Új szűrő / kategória neve...") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Sentences,
-                        imeAction = ImeAction.Done
-                    )
-                )
-                FilledIconButton(
-                    onClick = {
-                        if (newFilterName.isNotBlank()) {
-                            onAddFilter(newFilterName)
-                            newFilterName = ""
-                        }
-                    },
-                    enabled = newFilterName.isNotBlank(),
-                    modifier = Modifier.size(48.dp),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Szűrő hozzáadása"
-                    )
-                }
-            }
-
-            filters.forEachIndexed { index, filter ->
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = "${index + 1}. ${filter.label}",
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = { onMoveFilter(filter.id, -1) },
-                                enabled = index > 0,
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowUp,
-                                    contentDescription = "Mozgatás fel"
-                                )
-                            }
-                            IconButton(
-                                onClick = { onMoveFilter(filter.id, 1) },
-                                enabled = index < filters.lastIndex,
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Mozgatás le"
-                                )
-                            }
-                            IconButton(
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "1. Kell venni (Kifogyóban) lista widget",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Megjeleníti a főképernyőn az elfogyott és kifogyóban lévő tételek számát és listáját.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            FilledTonalButton(
                                 onClick = {
-                                    renameText = filter.label
-                                    filterBeingRenamed = filter
+                                    val pinned = KeszletWidgetManager.requestPinLowStockWidget(context)
+                                    if (!pinned) {
+                                        Toast.makeText(
+                                            context,
+                                            "A főképernyőn hosszan nyomva a Widgetek között tudod hozzáadni!",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
                                 },
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier.fillMaxWidth()
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Edit,
-                                    contentDescription = "Átnevezés",
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
                                     modifier = Modifier.size(18.dp)
                                 )
-                            }
-                            if (filter.isDeletable) {
-                                IconButton(
-                                    onClick = { onDeleteFilter(filter.id) },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = "Törlés",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            } else {
-                                Spacer(modifier = Modifier.width(36.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Kell venni widget kitűzése")
                             }
                         }
+                    }
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "2. Gyorsgombok widget",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Kompakt sáv a főképernyőre az Új termék felvétele és a Kell venni lista gyors megnyitásához.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            FilledTonalButton(
+                                onClick = {
+                                    val pinned = KeszletWidgetManager.requestPinQuickActionWidget(context)
+                                    if (!pinned) {
+                                        Toast.makeText(
+                                            context,
+                                            "A főképernyőn hosszan nyomva a Widgetek között tudod hozzáadni!",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Gyorsgombok widget kitűzése")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider()
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Biztonsági mentés (JSON / CSV)",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = "Mentsd le a teljes készletet fájlba, vagy tölts be tételeket egy korábbi JSON / CSV mentésből:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                CompactChipFlowRow {
+                    BackupFormat.entries.forEach { format ->
+                        CompactFilterChip(
+                            selected = settings.backupFormat == format,
+                            onClick = { onBackupFormatChange(format) },
+                            label = format.label
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = onExportBackupClick,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Mentés fájlba")
+                    }
+                    OutlinedButton(
+                        onClick = onImportBackupClick,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Fájl importálása")
                     }
                 }
             }

@@ -81,24 +81,58 @@ class InventoryRepository(
             "unit" to updatedItem.unit,
             "minQuantity" to updatedItem.minQuantity.coerceAtLeast(0.0).cleanQuantity(),
             "isOpened" to updatedItem.isOpened,
+            "isFavorite" to updatedItem.isFavorite,
             "note" to updatedItem.note.trim(),
             "updatedAt" to updatedItem.updatedAt
         )
         collection.document(updatedItem.id).set(payload, SetOptions.merge()).await()
     }
 
-    suspend fun updateQuantity(itemId: String, newQuantity: Double) {
+    suspend fun upsertItemsBatch(items: List<InventoryItem>) {
+        if (items.isEmpty()) return
+        val now = System.currentTimeMillis()
+        items.chunked(400).forEach { chunk ->
+            val batch = firestore.batch()
+            for (item in chunk) {
+                val payload = mapOf(
+                    "name" to item.name.trim(),
+                    "category" to item.category,
+                    "quantity" to item.quantity.coerceAtLeast(0.0).cleanQuantity(),
+                    "unit" to item.unit,
+                    "minQuantity" to item.minQuantity.coerceAtLeast(0.0).cleanQuantity(),
+                    "isOpened" to item.isOpened,
+                    "isFavorite" to item.isFavorite,
+                    "note" to item.note.trim(),
+                    "updatedAt" to now
+                )
+                batch.set(collection.document(item.id), payload, SetOptions.merge())
+            }
+            batch.commit().await()
+        }
+    }
+
+    suspend fun updateQuantity(itemId: String, newQuantity: Double, isOpened: Boolean? = null) {
         val safeQuantity = newQuantity.coerceAtLeast(0.0).cleanQuantity()
-        val updates = mapOf(
-            "quantity" to safeQuantity,
-            "updatedAt" to System.currentTimeMillis()
-        )
+        val updates = LinkedHashMap<String, Any>(3)
+        updates["quantity"] = safeQuantity
+        if (isOpened != null) {
+            updates["isOpened"] = isOpened
+        }
+        updates["updatedAt"] = System.currentTimeMillis()
         collection.document(itemId).set(updates, SetOptions.merge()).await()
     }
 
     suspend fun updateOpenedState(itemId: String, isOpened: Boolean) {
         val updates = mapOf(
             "isOpened" to isOpened,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        collection.document(itemId).set(updates, SetOptions.merge()).await()
+    }
+
+    suspend fun updateFavoriteState(itemId: String, isFavorite: Boolean) {
+        val updates = mapOf(
+            "isFavorite" to isFavorite,
             "updatedAt" to System.currentTimeMillis()
         )
         collection.document(itemId).set(updates, SetOptions.merge()).await()
@@ -188,6 +222,7 @@ class InventoryRepository(
             val quantity = (get("quantity") as? Number)?.toDouble()?.cleanQuantity() ?: 0.0
             val minQuantity = (get("minQuantity") as? Number)?.toDouble()?.cleanQuantity() ?: 1.0
             val isOpened = getBoolean("isOpened") ?: false
+            val isFavorite = getBoolean("isFavorite") ?: false
             val note = getString("note") ?: ""
             val updatedAt = (get("updatedAt") as? Number)?.toLong() ?: System.currentTimeMillis()
 
@@ -199,6 +234,7 @@ class InventoryRepository(
                 unit = unit,
                 minQuantity = minQuantity,
                 isOpened = isOpened,
+                isFavorite = isFavorite,
                 note = note,
                 updatedAt = updatedAt
             )

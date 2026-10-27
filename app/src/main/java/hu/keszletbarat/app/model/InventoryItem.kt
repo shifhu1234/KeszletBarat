@@ -17,6 +17,7 @@ data class InventoryItem(
     val unit: String = InventoryUnits.DB,
     val minQuantity: Double = 1.0,
     val isOpened: Boolean = false,
+    val isFavorite: Boolean = false,
     val note: String = "",
     val updatedAt: Long = System.currentTimeMillis()
 ) {

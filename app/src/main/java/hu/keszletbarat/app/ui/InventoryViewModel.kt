@@ -8,14 +8,18 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import hu.keszletbarat.app.data.AnimationSpeed
 import hu.keszletbarat.app.data.AppColorPalette
 import hu.keszletbarat.app.data.AppSettings
+import hu.keszletbarat.app.data.BackupFormat
 import hu.keszletbarat.app.data.FilterPlacement
 import hu.keszletbarat.app.data.GestureDirection
 import hu.keszletbarat.app.data.InventoryRepository
 import hu.keszletbarat.app.data.ItemLayoutMode
+import hu.keszletbarat.app.data.ItemSwipeAction
 import hu.keszletbarat.app.data.SettingsRepository
 import hu.keszletbarat.app.data.ThemeMode
+import hu.keszletbarat.app.data.UiScale
 import hu.keszletbarat.app.model.FilterItem
 import hu.keszletbarat.app.model.InventoryItem
+import hu.keszletbarat.app.model.InventoryUnits
 import hu.keszletbarat.app.model.SortDirection
 import hu.keszletbarat.app.model.SortField
 import hu.keszletbarat.app.model.cleanQuantity
@@ -31,6 +35,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 @Immutable
@@ -199,10 +205,13 @@ class InventoryViewModel(
         field: SortField,
         direction: SortDirection
     ): List<InventoryItem> {
+        val favoriteFirst = Comparator<InventoryItem> { a, b ->
+            b.isFavorite.compareTo(a.isFavorite)
+        }
         val nameAsc = Comparator<InventoryItem> { a, b ->
             a.normalizedName.compareTo(b.normalizedName)
         }
-        val finalComparator: Comparator<InventoryItem> = when (field) {
+        val fieldComparator: Comparator<InventoryItem> = when (field) {
             SortField.NAME -> if (direction == SortDirection.ASC) {
                 nameAsc
             } else {
@@ -230,7 +239,7 @@ class InventoryViewModel(
                     .thenComparing(nameAsc)
             }
         }
-        return items.sortedWith(finalComparator)
+        return items.sortedWith(favoriteFirst.thenComparing(fieldComparator))
     }
 
     fun handleWidgetAction(action: String?) {
@@ -298,6 +307,11 @@ class InventoryViewModel(
         updateItemQuantity(item, newQuantity)
     }
 
+    fun zeroItemQuantity(item: InventoryItem) {
+        if (item.quantity <= 0.0) return
+        updateItemQuantity(item, 0.0)
+    }
+
     fun toggleItemOpened(item: InventoryItem) {
         val newOpenedState = !item.isOpened
         val updated = item.copy(
@@ -315,16 +329,41 @@ class InventoryViewModel(
         }
     }
 
-    private fun updateItemQuantity(item: InventoryItem, newQuantity: Double) {
-        val safeQuantity = newQuantity.coerceAtLeast(0.0).cleanQuantity()
+    fun toggleItemFavorite(item: InventoryItem) {
+        val newFavoriteState = !item.isFavorite
         val updated = item.copy(
-            quantity = safeQuantity,
+            isFavorite = newFavoriteState,
             updatedAt = System.currentTimeMillis()
         )
         _optimisticOverrides.update { current -> current + (item.id to updated) }
         viewModelScope.launch {
             runCatching {
-                repository.updateQuantity(item.id, safeQuantity)
+                repository.updateFavoriteState(item.id, newFavoriteState)
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
+            }
+        }
+    }
+
+    private fun updateItemQuantity(item: InventoryItem, newQuantity: Double) {
+        val safeQuantity = newQuantity.coerceAtLeast(0.0).cleanQuantity()
+        val shouldResetOpened = safeQuantity <= 0.0 && settingsRepository.settings.value.autoResetOpenedOnZero && item.isOpened
+        val newOpenedState = if (shouldResetOpened) false else item.isOpened
+
+        val updated = item.copy(
+            quantity = safeQuantity,
+            isOpened = newOpenedState,
+            updatedAt = System.currentTimeMillis()
+        )
+        _optimisticOverrides.update { current -> current + (item.id to updated) }
+        viewModelScope.launch {
+            runCatching {
+                repository.updateQuantity(
+                    itemId = item.id,
+                    newQuantity = safeQuantity,
+                    isOpened = if (shouldResetOpened) false else null
+                )
                 _writeError.value = null
             }.onFailure { e ->
                 handleFirestoreError(e)
@@ -340,20 +379,29 @@ class InventoryViewModel(
         unit: String,
         minQuantity: Double,
         isOpened: Boolean,
+        isFavorite: Boolean,
         note: String
     ) {
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) return
+
+        val safeQty = quantity.coerceAtLeast(0.0).cleanQuantity()
+        val effectiveOpened = if (safeQty <= 0.0 && settingsRepository.settings.value.autoResetOpenedOnZero) {
+            false
+        } else {
+            isOpened
+        }
 
         val itemId = existingId ?: UUID.randomUUID().toString()
         val item = InventoryItem(
             id = itemId,
             name = trimmedName,
             category = category,
-            quantity = quantity.coerceAtLeast(0.0).cleanQuantity(),
+            quantity = safeQty,
             unit = unit,
             minQuantity = minQuantity.coerceAtLeast(0.0).cleanQuantity(),
-            isOpened = isOpened,
+            isOpened = effectiveOpened,
+            isFavorite = isFavorite,
             note = note.trim(),
             updatedAt = System.currentTimeMillis()
         )
@@ -363,6 +411,20 @@ class InventoryViewModel(
         viewModelScope.launch {
             runCatching {
                 repository.upsertItem(item)
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
+            }
+        }
+    }
+
+    fun restoreItem(item: InventoryItem) {
+        val restored = item.copy(updatedAt = System.currentTimeMillis())
+        _optimisticDeletedIds.update { current -> current - restored.id }
+        _optimisticOverrides.update { current -> current + (restored.id to restored) }
+        viewModelScope.launch {
+            runCatching {
+                repository.upsertItem(restored)
                 _writeError.value = null
             }.onFailure { e ->
                 handleFirestoreError(e)
@@ -381,6 +443,210 @@ class InventoryViewModel(
                 handleFirestoreError(e)
             }
         }
+    }
+
+    fun exportBackupContent(format: BackupFormat): String {
+        val items = _latestAllItems.value
+        return when (format) {
+            BackupFormat.JSON -> {
+                val arr = JSONArray()
+                for (item in items) {
+                    val obj = JSONObject()
+                    obj.put("id", item.id)
+                    obj.put("name", item.name)
+                    obj.put("category", item.category)
+                    obj.put("quantity", item.quantity)
+                    obj.put("unit", item.unit)
+                    obj.put("minQuantity", item.minQuantity)
+                    obj.put("isOpened", item.isOpened)
+                    obj.put("isFavorite", item.isFavorite)
+                    obj.put("note", item.note)
+                    arr.put(obj)
+                }
+                arr.toString(2)
+            }
+            BackupFormat.CSV -> {
+                val sb = StringBuilder()
+                sb.appendLine("id,name,category,quantity,unit,minQuantity,isOpened,isFavorite,note")
+                for (item in items) {
+                    sb.append(escapeCsv(item.id)).append(',')
+                    sb.append(escapeCsv(item.name)).append(',')
+                    sb.append(escapeCsv(item.category)).append(',')
+                    sb.append(item.quantity).append(',')
+                    sb.append(escapeCsv(item.unit)).append(',')
+                    sb.append(item.minQuantity).append(',')
+                    sb.append(item.isOpened).append(',')
+                    sb.append(item.isFavorite).append(',')
+                    sb.appendLine(escapeCsv(item.note))
+                }
+                sb.toString()
+            }
+        }
+    }
+
+    fun importBackupContent(rawContent: String): Int {
+        val trimmed = rawContent.trim()
+        if (trimmed.isEmpty()) return 0
+
+        val parsedItems = if (trimmed.startsWith("[")) {
+            parseJsonBackup(trimmed)
+        } else {
+            parseCsvBackup(trimmed)
+        }
+
+        if (parsedItems.isEmpty()) return 0
+
+        val now = System.currentTimeMillis()
+        val existingByName = _latestAllItems.value.associateBy { it.exactMatchKey }
+
+        val finalItems = parsedItems.map { imported ->
+            val match = existingByName[imported.exactMatchKey]
+            imported.copy(
+                id = match?.id ?: imported.id,
+                updatedAt = now
+            )
+        }
+
+        _optimisticDeletedIds.update { current ->
+            current - finalItems.map { it.id }.toSet()
+        }
+        _optimisticOverrides.update { current ->
+            val map = LinkedHashMap(current)
+            for (item in finalItems) {
+                map[item.id] = item
+            }
+            map
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                repository.upsertItemsBatch(finalItems)
+                _writeError.value = null
+            }.onFailure { e ->
+                handleFirestoreError(e)
+            }
+        }
+
+        return finalItems.size
+    }
+
+    private fun parseJsonBackup(jsonText: String): List<InventoryItem> {
+        return runCatching {
+            val arr = JSONArray(jsonText)
+            val result = ArrayList<InventoryItem>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val name = obj.optString("name", "").trim()
+                if (name.isEmpty()) continue
+                val id = obj.optString("id", "").ifBlank { UUID.randomUUID().toString() }
+                val category = obj.optString("category", "Hűtő").ifBlank { "Hűtő" }
+                val quantity = obj.optDouble("quantity", 1.0).coerceAtLeast(0.0).cleanQuantity()
+                val rawUnit = obj.optString("unit", InventoryUnits.DB)
+                val unit = if (rawUnit in InventoryUnits.all) rawUnit else InventoryUnits.DB
+                val minQuantity = obj.optDouble("minQuantity", 1.0).coerceAtLeast(0.0).cleanQuantity()
+                val isOpened = obj.optBoolean("isOpened", false)
+                val isFavorite = obj.optBoolean("isFavorite", false)
+                val note = obj.optString("note", "").trim()
+
+                result.add(
+                    InventoryItem(
+                        id = id,
+                        name = name,
+                        category = category,
+                        quantity = quantity,
+                        unit = unit,
+                        minQuantity = minQuantity,
+                        isOpened = isOpened,
+                        isFavorite = isFavorite,
+                        note = note
+                    )
+                )
+            }
+            result
+        }.getOrDefault(emptyList())
+    }
+
+    private fun parseCsvBackup(csvText: String): List<InventoryItem> {
+        return runCatching {
+            val lines = csvText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+            if (lines.isEmpty()) return emptyList()
+            val startIndex = if (lines.first().lowercase().startsWith("id,") || lines.first().lowercase().startsWith("name,")) 1 else 0
+            val result = ArrayList<InventoryItem>()
+            for (i in startIndex until lines.size) {
+                val cols = parseCsvLine(lines[i])
+                if (cols.size < 2) continue
+                val hasIdCol = cols.size >= 6
+                val id = if (hasIdCol) cols[0].ifBlank { UUID.randomUUID().toString() } else UUID.randomUUID().toString()
+                val name = (if (hasIdCol) cols.getOrNull(1) else cols.getOrNull(0))?.trim().orEmpty()
+                if (name.isEmpty()) continue
+                val category = (if (hasIdCol) cols.getOrNull(2) else cols.getOrNull(1))?.trim()?.ifBlank { "Hűtő" } ?: "Hűtő"
+                val quantity = (if (hasIdCol) cols.getOrNull(3) else cols.getOrNull(2))?.toDoubleOrNull()?.coerceAtLeast(0.0)?.cleanQuantity() ?: 1.0
+                val rawUnit = (if (hasIdCol) cols.getOrNull(4) else cols.getOrNull(3))?.trim() ?: InventoryUnits.DB
+                val unit = if (rawUnit in InventoryUnits.all) rawUnit else InventoryUnits.DB
+                val minQuantity = (if (hasIdCol) cols.getOrNull(5) else cols.getOrNull(4))?.toDoubleOrNull()?.coerceAtLeast(0.0)?.cleanQuantity() ?: 1.0
+                val isOpened = (if (hasIdCol) cols.getOrNull(6) else null)?.toBooleanStrictOrNull() ?: false
+                val isFavorite = (if (hasIdCol) cols.getOrNull(7) else null)?.toBooleanStrictOrNull() ?: false
+                val note = (if (hasIdCol) cols.getOrNull(8) else null)?.trim().orEmpty()
+
+                result.add(
+                    InventoryItem(
+                        id = id,
+                        name = name,
+                        category = category,
+                        quantity = quantity,
+                        unit = unit,
+                        minQuantity = minQuantity,
+                        isOpened = isOpened,
+                        isFavorite = isFavorite,
+                        note = note
+                    )
+                )
+            }
+            result
+        }.getOrDefault(emptyList())
+    }
+
+    private fun escapeCsv(value: String): String {
+        val clean = value.replace("\"", "\"\"")
+        return if (clean.contains(',') || clean.contains('"') || clean.contains('\n')) {
+            "\"$clean\""
+        } else {
+            clean
+        }
+    }
+
+    private fun parseCsvLine(line: String): List<String> {
+        val result = ArrayList<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            if (inQuotes) {
+                if (c == '"') {
+                    if (i + 1 < line.length && line[i + 1] == '"') {
+                        current.append('"')
+                        i++
+                    } else {
+                        inQuotes = false
+                    }
+                } else {
+                    current.append(c)
+                }
+            } else {
+                when (c) {
+                    '"' -> inQuotes = true
+                    ',' -> {
+                        result.add(current.toString())
+                        current.clear()
+                    }
+                    else -> current.append(c)
+                }
+            }
+            i++
+        }
+        result.add(current.toString())
+        return result
     }
 
     fun moveFilterOrder(filterId: String, direction: Int) {
@@ -533,6 +799,34 @@ class InventoryViewModel(
 
     fun setItemLayoutMode(mode: ItemLayoutMode) {
         settingsRepository.setItemLayoutMode(mode)
+    }
+
+    fun setUiScale(scale: UiScale) {
+        settingsRepository.setUiScale(scale)
+    }
+
+    fun setHideUnopenedBadge(enabled: Boolean) {
+        settingsRepository.setHideUnopenedBadge(enabled)
+    }
+
+    fun setAutoResetOpenedOnZero(enabled: Boolean) {
+        settingsRepository.setAutoResetOpenedOnZero(enabled)
+    }
+
+    fun setAutoHideTopBarOnScroll(enabled: Boolean) {
+        settingsRepository.setAutoHideTopBarOnScroll(enabled)
+    }
+
+    fun setItemSwipeRightAction(action: ItemSwipeAction) {
+        settingsRepository.setItemSwipeRightAction(action)
+    }
+
+    fun setItemSwipeLeftAction(action: ItemSwipeAction) {
+        settingsRepository.setItemSwipeLeftAction(action)
+    }
+
+    fun setBackupFormat(format: BackupFormat) {
+        settingsRepository.setBackupFormat(format)
     }
 
     fun setAddItemGesture(direction: GestureDirection) {

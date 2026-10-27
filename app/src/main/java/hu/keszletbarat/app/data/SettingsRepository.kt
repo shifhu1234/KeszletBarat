@@ -71,6 +71,23 @@ enum class ItemLayoutMode(val label: String) {
     COMPACT("Kompakt lista")
 }
 
+enum class UiScale(val label: String, val scaleFactor: Float) {
+    SMALL("Kicsi", 0.90f),
+    NORMAL("Normál", 1.0f),
+    LARGE("Nagy", 1.12f)
+}
+
+enum class ItemSwipeAction(val label: String) {
+    NONE("Kikapcsolva"),
+    ZERO_QUANTITY("Lenullázás (0)"),
+    TOGGLE_OPENED("Bontott váltás")
+}
+
+enum class BackupFormat(val label: String, val extension: String, val mimeType: String) {
+    JSON("JSON (.json)", "json", "application/json"),
+    CSV("CSV (.csv)", "csv", "text/csv")
+}
+
 @Immutable
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -78,6 +95,13 @@ data class AppSettings(
     val filterPlacement: FilterPlacement = FilterPlacement.TOP_BAR,
     val animationSpeed: AnimationSpeed = AnimationSpeed.BOUNCY,
     val itemLayoutMode: ItemLayoutMode = ItemLayoutMode.LIST,
+    val uiScale: UiScale = UiScale.NORMAL,
+    val hideUnopenedBadge: Boolean = false,
+    val autoResetOpenedOnZero: Boolean = true,
+    val autoHideTopBarOnScroll: Boolean = false,
+    val itemSwipeRightAction: ItemSwipeAction = ItemSwipeAction.NONE,
+    val itemSwipeLeftAction: ItemSwipeAction = ItemSwipeAction.NONE,
+    val backupFormat: BackupFormat = BackupFormat.JSON,
     val addItemGesture: GestureDirection = GestureDirection.SWIPE_UP,
     val openSettingsGesture: GestureDirection = GestureDirection.SWIPE_DOWN,
     val groupByCategory: Boolean = false,
@@ -130,6 +154,41 @@ class SettingsRepository(context: Context) {
     fun setItemLayoutMode(mode: ItemLayoutMode) {
         prefs.edit().putString(KEY_ITEM_LAYOUT_MODE, mode.name).apply()
         _settings.value = _settings.value.copy(itemLayoutMode = mode)
+    }
+
+    fun setUiScale(scale: UiScale) {
+        prefs.edit().putString(KEY_UI_SCALE, scale.name).apply()
+        _settings.value = _settings.value.copy(uiScale = scale)
+    }
+
+    fun setHideUnopenedBadge(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_HIDE_UNOPENED_BADGE, enabled).apply()
+        _settings.value = _settings.value.copy(hideUnopenedBadge = enabled)
+    }
+
+    fun setAutoResetOpenedOnZero(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_RESET_OPENED_ON_ZERO, enabled).apply()
+        _settings.value = _settings.value.copy(autoResetOpenedOnZero = enabled)
+    }
+
+    fun setAutoHideTopBarOnScroll(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_HIDE_TOP_BAR_SCROLL, enabled).apply()
+        _settings.value = _settings.value.copy(autoHideTopBarOnScroll = enabled)
+    }
+
+    fun setItemSwipeRightAction(action: ItemSwipeAction) {
+        prefs.edit().putString(KEY_ITEM_SWIPE_RIGHT, action.name).apply()
+        _settings.value = _settings.value.copy(itemSwipeRightAction = action)
+    }
+
+    fun setItemSwipeLeftAction(action: ItemSwipeAction) {
+        prefs.edit().putString(KEY_ITEM_SWIPE_LEFT, action.name).apply()
+        _settings.value = _settings.value.copy(itemSwipeLeftAction = action)
+    }
+
+    fun setBackupFormat(format: BackupFormat) {
+        prefs.edit().putString(KEY_BACKUP_FORMAT, format.name).apply()
+        _settings.value = _settings.value.copy(backupFormat = format)
     }
 
     fun setAddItemGesture(direction: GestureDirection) {
@@ -214,6 +273,22 @@ class SettingsRepository(context: Context) {
         val layoutName = prefs.getString(KEY_ITEM_LAYOUT_MODE, ItemLayoutMode.LIST.name) ?: ItemLayoutMode.LIST.name
         val itemLayoutMode = runCatching { ItemLayoutMode.valueOf(layoutName) }.getOrDefault(ItemLayoutMode.LIST)
 
+        val scaleName = prefs.getString(KEY_UI_SCALE, UiScale.NORMAL.name) ?: UiScale.NORMAL.name
+        val uiScale = runCatching { UiScale.valueOf(scaleName) }.getOrDefault(UiScale.NORMAL)
+
+        val hideUnopenedBadge = prefs.getBoolean(KEY_HIDE_UNOPENED_BADGE, false)
+        val autoResetOpenedOnZero = prefs.getBoolean(KEY_AUTO_RESET_OPENED_ON_ZERO, true)
+        val autoHideTopBarOnScroll = prefs.getBoolean(KEY_AUTO_HIDE_TOP_BAR_SCROLL, false)
+
+        val swipeRightName = prefs.getString(KEY_ITEM_SWIPE_RIGHT, ItemSwipeAction.NONE.name) ?: ItemSwipeAction.NONE.name
+        val itemSwipeRightAction = runCatching { ItemSwipeAction.valueOf(swipeRightName) }.getOrDefault(ItemSwipeAction.NONE)
+
+        val swipeLeftName = prefs.getString(KEY_ITEM_SWIPE_LEFT, ItemSwipeAction.NONE.name) ?: ItemSwipeAction.NONE.name
+        val itemSwipeLeftAction = runCatching { ItemSwipeAction.valueOf(swipeLeftName) }.getOrDefault(ItemSwipeAction.NONE)
+
+        val backupFormatName = prefs.getString(KEY_BACKUP_FORMAT, BackupFormat.JSON.name) ?: BackupFormat.JSON.name
+        val backupFormat = runCatching { BackupFormat.valueOf(backupFormatName) }.getOrDefault(BackupFormat.JSON)
+
         val addGestureName = prefs.getString(KEY_ADD_ITEM_GESTURE, GestureDirection.SWIPE_UP.name) ?: GestureDirection.SWIPE_UP.name
         val addItemGesture = runCatching { GestureDirection.valueOf(addGestureName) }.getOrDefault(GestureDirection.SWIPE_UP)
 
@@ -246,6 +321,13 @@ class SettingsRepository(context: Context) {
             filterPlacement = filterPlacement,
             animationSpeed = animationSpeed,
             itemLayoutMode = itemLayoutMode,
+            uiScale = uiScale,
+            hideUnopenedBadge = hideUnopenedBadge,
+            autoResetOpenedOnZero = autoResetOpenedOnZero,
+            autoHideTopBarOnScroll = autoHideTopBarOnScroll,
+            itemSwipeRightAction = itemSwipeRightAction,
+            itemSwipeLeftAction = itemSwipeLeftAction,
+            backupFormat = backupFormat,
             addItemGesture = addItemGesture,
             openSettingsGesture = openSettingsGesture,
             groupByCategory = groupByCategory,
@@ -264,6 +346,13 @@ class SettingsRepository(context: Context) {
         private const val KEY_FILTER_PLACEMENT = "filter_placement"
         private const val KEY_ANIMATION_SPEED = "animation_speed"
         private const val KEY_ITEM_LAYOUT_MODE = "item_layout_mode"
+        private const val KEY_UI_SCALE = "ui_scale"
+        private const val KEY_HIDE_UNOPENED_BADGE = "hide_unopened_badge"
+        private const val KEY_AUTO_RESET_OPENED_ON_ZERO = "auto_reset_opened_on_zero"
+        private const val KEY_AUTO_HIDE_TOP_BAR_SCROLL = "auto_hide_top_bar_scroll"
+        private const val KEY_ITEM_SWIPE_RIGHT = "item_swipe_right"
+        private const val KEY_ITEM_SWIPE_LEFT = "item_swipe_left"
+        private const val KEY_BACKUP_FORMAT = "backup_format"
         private const val KEY_ADD_ITEM_GESTURE = "add_item_gesture"
         private const val KEY_OPEN_SETTINGS_GESTURE = "open_settings_gesture"
         private const val KEY_GROUP_BY_CATEGORY = "group_by_category"
